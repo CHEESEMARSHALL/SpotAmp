@@ -139,7 +139,7 @@ class MusicRepository(context: Context) {
 
     suspend fun getArtists(sectionId: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
         try {
-            val response = getService().getLibraryItems(sectionId, "8", settings.token)
+            val response = getService().getLibraryItems(sectionId, "8", token = settings.token)
             response.mediaContainer.metadata ?: emptyList()
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error fetching artists", e)
@@ -149,7 +149,7 @@ class MusicRepository(context: Context) {
 
     suspend fun getAlbums(sectionId: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
         try {
-            val response = getService().getLibraryItems(sectionId, "9", settings.token)
+            val response = getService().getLibraryItems(sectionId, "9", token = settings.token)
             response.mediaContainer.metadata ?: emptyList()
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error fetching albums", e)
@@ -212,8 +212,16 @@ class MusicRepository(context: Context) {
 
     suspend fun syncTrackCache(sectionId: String) = withContext(Dispatchers.IO) {
         try {
-            val response = getService().getLibraryItems(sectionId, "10", settings.token)
-            val tracks = response.mediaContainer.metadata ?: emptyList()
+            val pageSize = 200
+            val tracks = mutableListOf<PlexMetadata>()
+            var offset = 0
+            while (true) {
+                val page = getService().getLibraryItems(sectionId, "10", offset, pageSize, settings.token)
+                    .mediaContainer.metadata.orEmpty()
+                tracks += page
+                if (page.size < pageSize) break
+                offset += page.size
+            }
             
             val entities = tracks.map { track ->
                 val trackKey = track.media?.firstOrNull()?.part?.firstOrNull()?.key ?: ""
@@ -224,7 +232,13 @@ class MusicRepository(context: Context) {
                     album = track.parentTitle ?: "Unknown Album",
                     key = trackKey,
                     thumb = track.thumb ?: "",
-                    duration = track.duration ?: 0L
+                    duration = track.duration ?: 0L,
+                    year = track.year,
+                    addedAt = track.addedAt,
+                    playCount = track.viewCount ?: 0,
+                    lastPlayedAt = track.lastViewedAt,
+                    genres = track.genres.orEmpty().joinToString("|") { it.tag },
+                    collections = track.collections.orEmpty().joinToString("|") { it.tag }
                 )
             }.filter { it.key.isNotEmpty() }
 

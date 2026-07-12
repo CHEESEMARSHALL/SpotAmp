@@ -146,8 +146,11 @@ class HomeRecommendationEngine(private val context: Context) {
         val cachedTracks = musicDao.getCachedTracksList()
         
         if (cachedTracks.isEmpty()) {
-            // No real library data is cached locally. Fall back to gorgeous mock feed.
-            return@withContext createMockFeed(realHistory)
+            return@withContext HomeFeedState(
+                isMock = false,
+                recentlyAdded = realRecentlyAdded,
+                history = realHistory.take(10)
+            )
         }
 
         try {
@@ -155,7 +158,7 @@ class HomeRecommendationEngine(private val context: Context) {
             val recentPlays = buildRealRecentPlays(realHistory, cachedTracks)
             val dailyMixes = buildRealDailyMixes(cachedTracks)
             val jumpBackIn = buildRealJumpBackIn(realHistory, cachedTracks)
-            val stations = buildDefaultStations()
+            val stations = buildDefaultStations(cachedTracks)
             val madeForYou = buildRealMadeForYou(cachedTracks)
             val moreFromSections = buildRealMoreFromSections(cachedTracks)
             val mostPlayed = buildRealMostPlayed(realHistory, cachedTracks)
@@ -178,7 +181,7 @@ class HomeRecommendationEngine(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e("HomeRecommendationEngine", "Error generating real recommendation feed", e)
-            createMockFeed(realHistory)
+            HomeFeedState(isMock = false, recentlyAdded = realRecentlyAdded, history = realHistory.take(10))
         }
     }
 
@@ -345,8 +348,8 @@ class HomeRecommendationEngine(private val context: Context) {
         return items.take(6)
     }
 
-    private fun buildDefaultStations(): List<RecommendedStation> {
-        return listOf(
+    private fun buildDefaultStations(cachedTracks: List<CachedTrack>): List<RecommendedStation> {
+        val stations = mutableListOf(
             RecommendedStation("st_lib", "Library Radio", "Continuous mix of your self-hosted collection", RadioType.LIBRARY_RADIO, listOf(0xFF4F46E5, 0xFF06B6D4)),
             RecommendedStation("st_art", "Artist Mix Builder", "Build custom stations around key artists", RadioType.ARTIST_RADIO, listOf(0xFF8B5CF6, 0xFFEC4899)),
             RecommendedStation("st_deep", "Deep Cuts Radio", "Unearth rare, lesser-played library files", RadioType.DEEP_CUTS, listOf(0xFF10B981, 0xFF3B82F6)),
@@ -356,6 +359,10 @@ class HomeRecommendationEngine(private val context: Context) {
             RecommendedStation("st_decade", "Decade Radio", "Songs from specific nostalgic ranges", RadioType.DECADE_RADIO, listOf(0xFFEC4899, 0xFFF59E0B)),
             RecommendedStation("st_sound", "Soundtrack Radio", "Soundtracks, games, and cinematic tracks", RadioType.SOUNDTRACK_RADIO, listOf(0xFF14B8A6, 0xFF6366F1))
         )
+        if (cachedTracks.none { it.collections.isNotBlank() }) {
+            stations.removeAll { it.type == RadioType.MOOD_RADIO || it.type == RadioType.STYLE_RADIO }
+        }
+        return stations
     }
 
     private fun buildRealMadeForYou(cachedTracks: List<CachedTrack>): List<MadeForYouItem> {
@@ -455,9 +462,12 @@ class HomeRecommendationEngine(private val context: Context) {
         history: List<RecentTrack>,
         cachedTracks: List<CachedTrack>
     ): List<MostPlayedItem> {
-        // If history exists, count plays. Otherwise, simulate based on cached tracks.
+        // Use actual Plex play counts first, then local history as a supplement.
         val counts = history.groupBy { it.ratingKey }.mapValues { it.value.size }
-        val sortedKeys = counts.toList().sortedByDescending { it.second }
+        val sortedKeys = cachedTracks
+            .map { it.ratingKey to (it.playCount + (counts[it.ratingKey] ?: 0)) }
+            .filter { it.second > 0 }
+            .sortedByDescending { it.second }
 
         val list = mutableListOf<MostPlayedItem>()
         if (sortedKeys.isNotEmpty()) {
@@ -469,15 +479,6 @@ class HomeRecommendationEngine(private val context: Context) {
             }
         }
 
-        // Fallback or fill up to 6 items
-        if (list.size < 6) {
-            val needed = 6 - list.size
-            val fillTracks = cachedTracks.shuffled().take(needed)
-            fillTracks.forEach { ct ->
-                list.add(MostPlayedItem(ct.toTrackItem(), (2..12).random()))
-            }
-        }
-
         return list.sortedByDescending { it.playCount }
     }
 
@@ -485,9 +486,9 @@ class HomeRecommendationEngine(private val context: Context) {
         if (cachedTracks.isEmpty()) return null
         
         // Select a track released some years ago
-        val availableYears = cachedTracks.mapNotNull { it.toTrackItem().ratingKey.toIntOrNull()?.let { 2000 + (it % 25) } }.distinct()
-        val selectedYear = if (availableYears.isNotEmpty()) availableYears.random() else Calendar.getInstance().get(Calendar.YEAR) - (5..20).random()
-        val track = cachedTracks.random()
+        val dated = cachedTracks.filter { it.year != null }
+        val track = dated.randomOrNull() ?: return null
+        val selectedYear = track.year ?: return null
         val yearsAgo = Calendar.getInstance().get(Calendar.YEAR) - selectedYear
 
         return OnThisDayItem(

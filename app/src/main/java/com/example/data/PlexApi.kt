@@ -43,7 +43,15 @@ data class PlexMetadata(
     @Json(name = "duration") val duration: Long? = null,
     @Json(name = "Media") val media: List<PlexMedia>? = null,
     @Json(name = "year") val year: Int? = null
+    ,@Json(name = "addedAt") val addedAt: Long? = null
+    ,@Json(name = "viewCount") val viewCount: Int? = null
+    ,@Json(name = "lastViewedAt") val lastViewedAt: Long? = null
+    ,@Json(name = "Genre") val genres: List<PlexTag>? = null
+    ,@Json(name = "Collection") val collections: List<PlexTag>? = null
 )
+
+@JsonClass(generateAdapter = true)
+data class PlexTag(@Json(name = "tag") val tag: String)
 
 @JsonClass(generateAdapter = true)
 data class PlexMedia(
@@ -66,6 +74,8 @@ interface PlexApiService {
     suspend fun getLibraryItems(
         @Path("sectionId") sectionId: String,
         @Query("type") type: String, // "8" for artists, "9" for albums, "10" for tracks
+        @Query("offset") offset: Int = 0,
+        @Query("limit") limit: Int = 200,
         @Header("X-Plex-Token") token: String,
         @Header("Accept") accept: String = "application/json"
     ): PlexEnvelope<PlexMetadataContainer>

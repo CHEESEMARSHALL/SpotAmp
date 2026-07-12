@@ -12,7 +12,13 @@ data class CachedTrack(
     val album: String,
     val key: String,
     val thumb: String,
-    val duration: Long
+    val duration: Long,
+    val year: Int? = null,
+    val addedAt: Long? = null,
+    val playCount: Int = 0,
+    val lastPlayedAt: Long? = null,
+    val genres: String = "",
+    val collections: String = ""
 )
 
 @Entity(tableName = "recently_played")
@@ -171,7 +177,7 @@ interface MusicDao {
         DownloadedTrackEntity::class,
         LikedTrackEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {
