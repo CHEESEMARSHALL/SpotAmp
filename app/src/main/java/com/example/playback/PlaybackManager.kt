@@ -3,6 +3,7 @@ package com.example.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import java.io.File
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -16,7 +17,15 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.example.data.PlaybackStateEntity
+import com.example.data.ListeningHistoryEntity
 
+@Serializable
 data class TrackItem(
     val ratingKey: String,
     val title: String,
@@ -24,7 +33,8 @@ data class TrackItem(
     val album: String,
     val key: String, // e.g. "/library/parts/123/..."
     val thumb: String, // e.g. "/library/metadata/456/thumb/..."
-    val duration: Long
+    val duration: Long,
+    val localPath: String? = null
 )
 
 class PlaybackManager private constructor(private val appContext: Context) {
@@ -61,6 +71,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
     // Database helper to insert into recently played history
     private var musicDao: MusicDao? = null
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val historyMutex = Mutex()
+    @Volatile private var lastPersistAt = 0L
 
     // Base URL & Token reference (populated from Settings)
     var baseUrl: String = ""
@@ -70,6 +82,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     // Last.fm Scrobbling support
     private var hasScrobbledCurrent = false
+    private var currentTrackCompleted = false
 
     // Equalizer & Audio processing
     private var equalizer: android.media.audiofx.Equalizer? = null
@@ -101,6 +114,43 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     fun setMusicDao(dao: MusicDao) {
         this.musicDao = dao
+        coroutineScope.launch { restorePlaybackState() }
+    }
+
+    private suspend fun restorePlaybackState() {
+        val state = musicDao?.getPlaybackState() ?: return
+        try {
+            val restoredQueue = Json.decodeFromString<List<TrackItem>>(state.queueJson)
+                .filter { it.localPath == null || File(it.localPath).isFile }
+            if (restoredQueue.isEmpty()) return
+            _queue.value = restoredQueue
+            _currentIndex.value = state.currentIndex.coerceIn(0, restoredQueue.lastIndex)
+            _currentTrack.value = restoredQueue[_currentIndex.value]
+            _progress.value = state.positionMs.coerceAtLeast(0L)
+            _shuffleModeEnabled.value = state.shuffleEnabled
+            _repeatMode.value = state.repeatMode
+        } catch (_: Exception) {
+            // Corrupt state should never prevent a fresh playback session.
+        }
+    }
+
+    private fun persistPlaybackState() {
+        val now = System.currentTimeMillis()
+        if (now - lastPersistAt < 2000L) return
+        lastPersistAt = now
+        coroutineScope.launch {
+            val dao = musicDao ?: return@launch
+            if (_queue.value.isEmpty()) return@launch
+            dao.savePlaybackState(
+                PlaybackStateEntity(
+                    queueJson = Json.encodeToString(_queue.value),
+                    currentIndex = _currentIndex.value,
+                    positionMs = _progress.value,
+                    shuffleEnabled = _shuffleModeEnabled.value,
+                    repeatMode = _repeatMode.value
+                )
+            )
+        }
     }
 
     private fun initializePlayer() {
@@ -149,6 +199,11 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     mainHandler.post {
                         mediaItem?.let { item ->
                             val ratingKey = item.mediaId
+                            _currentTrack.value?.let { previous ->
+                                if (previous.ratingKey != ratingKey && !currentTrackCompleted) {
+                                    recordListeningEvent(previous, completed = false, skipped = true)
+                                }
+                            }
                             val track = _queue.value.find { it.ratingKey == ratingKey }
                             if (track != null) {
                                 _currentTrack.value = track
@@ -158,6 +213,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
                                 }
                                 _duration.value = track.duration
                                 saveToRecentlyPlayed(track)
+                                currentTrackCompleted = false
+                                recordListeningEvent(track, completed = false, skipped = false)
                                 
                                 // Reset Last.fm triggers and Notify Now Playing
                                 hasScrobbledCurrent = false
@@ -194,7 +251,6 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     @OptIn(UnstableApi::class)
     private fun updateExoPlayerQueue(queueList: List<TrackItem>, startIndex: Int) {
-        if (baseUrl.isEmpty() || token.isEmpty()) return
         val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
 
         mainHandler.post {
@@ -202,7 +258,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 player.stop()
                 player.clearMediaItems()
                 val mediaItems = queueList.map { track ->
-                    val streamUrl = "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+                    val streamUrl = mediaUri(track, normalizedBaseUrl)
                     MediaItem.Builder()
                         .setUri(streamUrl)
                         .setMediaId(track.ratingKey)
@@ -220,11 +276,42 @@ class PlaybackManager private constructor(private val appContext: Context) {
         }
     }
 
+    private fun recordListeningEvent(track: TrackItem, completed: Boolean, skipped: Boolean) {
+        coroutineScope.launch {
+            historyMutex.withLock {
+                val dao = musicDao ?: return@withLock
+                val existing = dao.getListeningHistory(track.ratingKey)
+                val now = System.currentTimeMillis()
+                dao.saveListeningHistory(
+                    ListeningHistoryEntity(
+                    ratingKey = track.ratingKey,
+                    title = track.title,
+                    artist = track.artist,
+                    album = track.album,
+                    playCount = (existing?.playCount ?: 0) + if (!completed && !skipped) 1 else 0,
+                    completedCount = (existing?.completedCount ?: 0) + if (completed) 1 else 0,
+                    skipCount = (existing?.skipCount ?: 0) + if (skipped) 1 else 0,
+                    lastPlayedAt = if (!completed && !skipped) now else existing?.lastPlayedAt,
+                    lastCompletedAt = if (completed) now else existing?.lastCompletedAt,
+                    lastSkippedAt = if (skipped) now else existing?.lastSkippedAt
+                    )
+                )
+            }
+        }
+    }
+
+    private fun mediaUri(track: TrackItem, normalizedBaseUrl: String = baseUrl.trimEnd('/')): String {
+        val local = track.localPath?.let(::File)
+        if (local?.isFile == true) return local.toURI().toString()
+        return "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+    }
+
     fun playTrack(track: TrackItem, queueList: List<TrackItem>) {
         _queue.value = queueList
         val index = queueList.indexOfFirst { it.ratingKey == track.ratingKey }
         _currentIndex.value = if (index != -1) index else 0
         _currentTrack.value = track
+        persistPlaybackState()
         updateExoPlayerQueue(queueList, if (index != -1) index else 0)
     }
 
@@ -234,6 +321,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
         val index = if (startIndex in queueList.indices) startIndex else 0
         _currentIndex.value = index
         _currentTrack.value = queueList[index]
+        persistPlaybackState()
         updateExoPlayerQueue(queueList, index)
     }
 
@@ -254,9 +342,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
         _queue.value = currentQueue
 
         mainHandler.post {
-            if (baseUrl.isEmpty() || token.isEmpty()) return@post
             val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-            val streamUrl = "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+            val streamUrl = mediaUri(track, normalizedBaseUrl)
             val mediaItem = MediaItem.Builder()
                 .setUri(streamUrl)
                 .setMediaId(track.ratingKey)
@@ -280,10 +367,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
         _queue.value = currentQueue
 
         mainHandler.post {
-            if (baseUrl.isEmpty() || token.isEmpty()) return@post
             val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
             val mediaItems = tracks.map { track ->
-                val streamUrl = "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+                val streamUrl = mediaUri(track, normalizedBaseUrl)
                 MediaItem.Builder()
                     .setUri(streamUrl)
                     .setMediaId(track.ratingKey)
@@ -306,9 +392,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
         _queue.value = currentQueue
 
         mainHandler.post {
-            if (baseUrl.isEmpty() || token.isEmpty()) return@post
             val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-            val streamUrl = "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+            val streamUrl = mediaUri(track, normalizedBaseUrl)
             val mediaItem = MediaItem.Builder()
                 .setUri(streamUrl)
                 .setMediaId(track.ratingKey)
@@ -329,10 +414,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
         _queue.value = currentQueue
 
         mainHandler.post {
-            if (baseUrl.isEmpty() || token.isEmpty()) return@post
             val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
             val mediaItems = tracks.map { track ->
-                val streamUrl = "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+                val streamUrl = mediaUri(track, normalizedBaseUrl)
                 MediaItem.Builder()
                     .setUri(streamUrl)
                     .setMediaId(track.ratingKey)
@@ -396,12 +480,14 @@ class PlaybackManager private constructor(private val appContext: Context) {
         mainHandler.post {
             exoPlayer?.seekTo(positionMs)
             _progress.value = positionMs
+            persistPlaybackState()
         }
     }
 
     fun toggleShuffle() {
         val newValue = !_shuffleModeEnabled.value
         _shuffleModeEnabled.value = newValue
+        persistPlaybackState()
         mainHandler.post {
             exoPlayer?.shuffleModeEnabled = newValue
         }
@@ -414,6 +500,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             else -> Player.REPEAT_MODE_OFF
         }
         _repeatMode.value = nextMode
+        persistPlaybackState()
         mainHandler.post {
             exoPlayer?.repeatMode = nextMode
         }
@@ -437,12 +524,18 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private val progressRunnable = object : Runnable {
         override fun run() {
             exoPlayer?.let { player ->
-                if (player.isPlaying) {
+                    if (player.isPlaying) {
                     val pos = player.currentPosition
                     _progress.value = pos
-                    _currentTrack.value?.let { track ->
-                        checkScrobbleProgress(pos, player.duration, track)
-                    }
+                    persistPlaybackState()
+                        _currentTrack.value?.let { track ->
+                            checkScrobbleProgress(pos, player.duration, track)
+                            val completionThreshold = if (player.duration > 30_000L) player.duration - 30_000L else (player.duration * 0.9).toLong()
+                            if (!currentTrackCompleted && completionThreshold > 0 && pos >= completionThreshold) {
+                                currentTrackCompleted = true
+                                recordListeningEvent(track, completed = true, skipped = false)
+                            }
+                        }
                 }
             }
             mainHandler.postDelayed(this, 250)
@@ -466,7 +559,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     fun applyAudioEffects() {
         val sessionId = exoPlayer?.audioSessionId ?: return
-        if (sessionId == android.media.C.AUDIO_SESSION_ID_UNSPECIFIED) return
+        if (sessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) return
         val settings = PlexSettingsManager(appContext)
 
         // Equalizer Setup
@@ -532,7 +625,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
                             true, 1,
                             false, 0,
                             false, 0,
-                            false, 0
+                            false
                         )
                         dynamicsProcessing = android.media.audiofx.DynamicsProcessing(0, sessionId, builder.build())
                     }

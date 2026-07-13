@@ -39,6 +39,8 @@ fun DownloadsScreen(
     val downloadProgresses by viewModel.downloadProgresses.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val completedTracks = downloadedTracks.filter { it.status == "completed" && !it.localPath.isNullOrBlank() }
+    val pendingTracks = downloadedTracks.filter { it.status != "completed" }
 
     val baseUrl = viewModel.repository.settings.baseUrl
     val token = viewModel.repository.settings.token
@@ -69,13 +71,19 @@ fun DownloadsScreen(
 
         // Downloads Stats Bar
         Text(
-            text = "${downloadedTracks.size} songs • ${sizeFormat.format(totalSizeMb)} MB downloaded",
+            text = "${completedTracks.size} songs • ${sizeFormat.format(totalSizeMb)} MB downloaded",
             style = MaterialTheme.typography.bodyMedium.copy(
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Medium
             ),
             modifier = Modifier.padding(bottom = 16.dp)
         )
+
+        if (downloadedTracks.isNotEmpty()) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { viewModel.deleteAllDownloads() }) { Text("Delete all", color = Color(0xFFFCA5A5)) }
+            }
+        }
 
         // Custom Tab Switcher Row
         Row(
@@ -169,8 +177,31 @@ fun DownloadsScreen(
                 }
             }
 
+            if (pendingTracks.isNotEmpty()) {
+                item {
+                    Text("Download queue", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Color.White.copy(alpha = 0.6f)))
+                }
+                itemsIndexed(pendingTracks) { _, track ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(10.dp)).padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(track.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${track.artist} • ${track.status}", color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.bodySmall)
+                            track.errorMessage?.let { Text(it, color = Color(0xFFFCA5A5), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        }
+                        if (track.status == "failed") {
+                            TextButton(onClick = { viewModel.retryDownload(track) }) { Text("Retry") }
+                        } else {
+                            TextButton(onClick = { viewModel.deleteDownload(track.ratingKey) }) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+
             // Quick Play Actions Header (Only for general Songs view or if songs exist)
-            if (selectedTab == "Songs" && downloadedTracks.isNotEmpty()) {
+            if (selectedTab == "Songs" && completedTracks.isNotEmpty()) {
                 item {
                     Row(
                         modifier = Modifier
@@ -181,7 +212,7 @@ fun DownloadsScreen(
                         // Play All Button
                         Button(
                             onClick = {
-                                val playbackTracks = downloadedTracks.map { it.toTrackItem() }
+                                val playbackTracks = completedTracks.map { it.toTrackItem() }
                                 viewModel.playbackManager.playQueue(playbackTracks, 0)
                             },
                             modifier = Modifier
@@ -201,7 +232,7 @@ fun DownloadsScreen(
                         // Shuffle Button
                         OutlinedButton(
                             onClick = {
-                                val playbackTracks = downloadedTracks.map { it.toTrackItem() }.shuffled()
+                                val playbackTracks = completedTracks.map { it.toTrackItem() }.shuffled()
                                 viewModel.playbackManager.playQueue(playbackTracks, 0)
                             },
                             modifier = Modifier
@@ -222,7 +253,7 @@ fun DownloadsScreen(
             }
 
             // Tab-Specific List Renderers
-            if (downloadedTracks.isEmpty()) {
+            if (completedTracks.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier
@@ -257,7 +288,7 @@ fun DownloadsScreen(
             } else {
                 when (selectedTab) {
                     "Songs" -> {
-                        itemsIndexed(downloadedTracks) { index, track ->
+                        itemsIndexed(completedTracks) { index, track ->
                             DownloadedTrackRow(
                                 index = index + 1,
                                 track = track,
@@ -267,14 +298,14 @@ fun DownloadsScreen(
                                     viewModel.deleteDownload(track.ratingKey)
                                 },
                                 onClick = {
-                                    val playbackTracks = downloadedTracks.map { it.toTrackItem() }
+                                    val playbackTracks = completedTracks.map { it.toTrackItem() }
                                     viewModel.playbackManager.playTrack(track.toTrackItem(), playbackTracks)
                                 }
                             )
                         }
                     }
                     "Albums" -> {
-                        val groupedByAlbum = downloadedTracks.groupBy { it.album }
+                        val groupedByAlbum = completedTracks.groupBy { it.album }
                         if (groupedByAlbum.isEmpty()) {
                             item {
                                 Box(

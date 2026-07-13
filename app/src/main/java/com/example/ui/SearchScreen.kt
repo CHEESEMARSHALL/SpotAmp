@@ -103,19 +103,6 @@ fun SearchScreen(
             shape = RoundedCornerShape(16.dp)
         )
 
-        if (!isConfigured) {
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Please configure Plex Server in Settings first.",
-                    style = MaterialTheme.typography.bodyLarge.copy(color = Color.White.copy(alpha = 0.5f))
-                )
-            }
-            return
-        }
-
         if (searchQuery.isBlank()) {
             // Empty State
             Box(
@@ -131,7 +118,7 @@ fun SearchScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Find your music instantly on your server",
+                        text = if (isConfigured) "Find your music instantly on your server" else "Search your indexed music offline",
                         style = MaterialTheme.typography.bodyMedium.copy(color = Color.White.copy(alpha = 0.4f))
                     )
                 }

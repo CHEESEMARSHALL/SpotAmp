@@ -107,7 +107,7 @@ data class NewReleaseItem(
 // ==========================================
 
 data class HomeFeedState(
-    val isMock: Boolean = true,
+    val isMock: Boolean = false,
     val recentPlays: List<HomeRecentPlay> = emptyList(),
     val recentlyAdded: List<PlexMetadata> = emptyList(),
     val dailyMixes: List<DailyMix> = emptyList(),
@@ -241,7 +241,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val topArtist1 = artistGroups.getOrNull(0)
         val topArtist2 = artistGroups.getOrNull(1)
         if (topArtist1 != null) {
-            val tracks = (topArtist1.second + (topArtist2?.second ?: emptyList())).shuffled().take(30).map { it.toTrackItem() }
+            val tracks = (topArtist1.second + (topArtist2?.second ?: emptyList())).sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() }
             val reasonText = topArtist1.first + (topArtist2?.let { ", " + it.first } ?: "")
             mixes.add(
                 DailyMix(
@@ -258,7 +258,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val secondaryArtist = artistGroups.getOrNull(2)
         val thirdArtist = artistGroups.getOrNull(3)
         if (secondaryArtist != null) {
-            val tracks = (secondaryArtist.second + (thirdArtist?.second ?: emptyList())).shuffled().take(30).map { it.toTrackItem() }
+            val tracks = (secondaryArtist.second + (thirdArtist?.second ?: emptyList())).sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() }
             val reasonText = secondaryArtist.first + (thirdArtist?.let { ", " + it.first } ?: "")
             mixes.add(
                 DailyMix(
@@ -272,7 +272,7 @@ class HomeRecommendationEngine(private val context: Context) {
         }
 
         // Daily Mix 03: Diverse eclectic mix from remaining library
-        val remainingTracks = cachedTracks.shuffled().take(40).map { it.toTrackItem() }
+        val remainingTracks = cachedTracks.sortedBy { it.ratingKey }.take(40).map { it.toTrackItem() }
         if (remainingTracks.isNotEmpty()) {
             mixes.add(
                 DailyMix(
@@ -288,7 +288,7 @@ class HomeRecommendationEngine(private val context: Context) {
         // Ensure we always have at least 3 daily mixes
         while (mixes.size < 5) {
             val idx = mixes.size + 1
-            val fallbackTracks = cachedTracks.shuffled().take(30).map { it.toTrackItem() }
+            val fallbackTracks = cachedTracks.sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() }
             mixes.add(
                 DailyMix(
                     id = "dm_$idx",
@@ -328,7 +328,7 @@ class HomeRecommendationEngine(private val context: Context) {
         }
 
         // Add some random artists
-        val uniqueArtists = cachedTracks.map { it.artist }.distinct().shuffled().take(2)
+        val uniqueArtists = cachedTracks.map { it.artist }.distinct().sorted().take(2)
         uniqueArtists.forEach { artistName ->
             val match = cachedTracks.firstOrNull { it.artist == artistName }
             if (match != null) {
@@ -379,7 +379,7 @@ class HomeRecommendationEngine(private val context: Context) {
                     title = "Heavy & Energetic Mix",
                     description = "Bracing riffs and powerful beats from your library",
                     artists = heavyTracks.map { it.artist }.distinct().take(4),
-                    tracks = heavyTracks.shuffled().take(30).map { it.toTrackItem() },
+                    tracks = heavyTracks.sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() },
                     thumb = heavyTracks.first().thumb
                 )
             )
@@ -396,14 +396,14 @@ class HomeRecommendationEngine(private val context: Context) {
                     title = "Cinematic Soundtrack Mix",
                     description = "Epic orchestral themes and background scores",
                     artists = ambientTracks.map { it.artist }.distinct().take(4),
-                    tracks = ambientTracks.shuffled().take(30).map { it.toTrackItem() },
+                    tracks = ambientTracks.sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() },
                     thumb = ambientTracks.first().thumb
                 )
             )
         }
 
         // Generic custom mix
-        val randomSample = cachedTracks.shuffled()
+        val randomSample = cachedTracks.sortedWith(compareByDescending<CachedTrack> { it.playCount }.thenBy { it.ratingKey })
         if (randomSample.size >= 5) {
             list.add(
                 MadeForYouItem(
@@ -427,7 +427,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val artistGroups = cachedTracks.groupBy { it.artist }
             .toList()
             .filter { it.second.size >= 3 }
-            .shuffled()
+            .sortedBy { it.first }
 
         artistGroups.take(2).forEach { (artistName, tracks) ->
             sections.add(
@@ -443,7 +443,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val albumGroups = cachedTracks.groupBy { it.album }
             .toList()
             .filter { it.second.size >= 4 }
-            .shuffled()
+            .sortedBy { it.first }
 
         albumGroups.take(1).forEach { (albumName, tracks) ->
             sections.add(
@@ -487,7 +487,7 @@ class HomeRecommendationEngine(private val context: Context) {
         
         // Select a track released some years ago
         val dated = cachedTracks.filter { it.year != null }
-        val track = dated.randomOrNull() ?: return null
+        val track = dated.sortedWith(compareByDescending<CachedTrack> { it.year }.thenBy { it.ratingKey }).firstOrNull() ?: return null
         val selectedYear = track.year ?: return null
         val yearsAgo = Calendar.getInstance().get(Calendar.YEAR) - selectedYear
 
@@ -509,19 +509,13 @@ class HomeRecommendationEngine(private val context: Context) {
         if (recentlyAdded.isEmpty()) return emptyList()
 
         return recentlyAdded.take(5).map { album ->
-            val albumTracks = cachedTracks.filter { it.album == album.title }.map { it.toTrackItem() }
+            val albumTracks = cachedTracks.filter { it.album == album.title }.sortedBy { it.ratingKey }.map { it.toTrackItem() }
             NewReleaseItem(
                 title = album.title,
                 artist = album.parentTitle ?: "Various Artists",
                 year = album.year ?: Calendar.getInstance().get(Calendar.YEAR),
                 thumb = album.thumb ?: "",
-                tracks = albumTracks.ifEmpty { 
-                    // Create simulated tracks inside the album
-                    listOf(
-                        TrackItem(album.ratingKey + "_1", "Track 01", album.parentTitle ?: "Artist", album.title, "", album.thumb ?: "", 210000L),
-                        TrackItem(album.ratingKey + "_2", "Track 02", album.parentTitle ?: "Artist", album.title, "", album.thumb ?: "", 185000L)
-                    )
-                }
+                tracks = albumTracks
             )
         }
     }
@@ -630,7 +624,7 @@ class HomeRecommendationEngine(private val context: Context) {
             JumpBackInItem("jbi_4", "Pirates of the Caribbean OST", "Hans Zimmer", "", "album")
         )
 
-        val stations = buildDefaultStations()
+        val stations = buildDefaultStations(emptyList())
 
         val madeForYou = listOf(
             MadeForYouItem(

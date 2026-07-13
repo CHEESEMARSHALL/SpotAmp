@@ -444,7 +444,7 @@ fun UnconfiguredBanner(onNavigateToSettings: () -> Unit) {
                 )
             }
             Text(
-                text = "Connect your self-hosted Plex Media Server or proxy API in settings. For now, enjoy exploring with offline-safe mock library tracks!",
+                text = "Connect your Plex Media Server in Settings, or index your library to browse cached music while offline.",
                 style = MaterialTheme.typography.bodyMedium.copy(
                     color = Color.White.copy(alpha = 0.7f),
                     lineHeight = 20.sp

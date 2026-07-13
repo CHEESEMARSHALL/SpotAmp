@@ -64,6 +64,9 @@ data class DownloadedTrackEntity(
     val thumb: String,
     val duration: Long,
     val fileSize: Long,
+    val localPath: String? = null,
+    val status: String = "completed",
+    val errorMessage: String? = null,
     val downloadedAt: Long = System.currentTimeMillis()
 )
 
@@ -79,6 +82,31 @@ data class LikedTrackEntity(
     val likedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "playback_state")
+data class PlaybackStateEntity(
+    @PrimaryKey val id: Int = 1,
+    val queueJson: String,
+    val currentIndex: Int,
+    val positionMs: Long,
+    val shuffleEnabled: Boolean,
+    val repeatMode: Int,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "listening_history")
+data class ListeningHistoryEntity(
+    @PrimaryKey val ratingKey: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val playCount: Int = 0,
+    val completedCount: Int = 0,
+    val skipCount: Int = 0,
+    val lastPlayedAt: Long? = null,
+    val lastCompletedAt: Long? = null,
+    val lastSkippedAt: Long? = null
+)
+
 @Dao
 interface MusicDao {
     // Cached tracks for AI indexing
@@ -87,6 +115,9 @@ interface MusicDao {
 
     @Query("SELECT * FROM cached_tracks")
     suspend fun getCachedTracksList(): List<CachedTrack>
+
+    @Query("SELECT * FROM cached_tracks WHERE title LIKE '%' || :query || '%' OR artist LIKE '%' || :query || '%' OR album LIKE '%' || :query || '%' LIMIT 100")
+    suspend fun searchCachedTracks(query: String): List<CachedTrack>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCachedTracks(tracks: List<CachedTrack>)
@@ -148,8 +179,29 @@ interface MusicDao {
     @Query("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE ratingKey = :ratingKey)")
     fun isTrackDownloadedFlow(ratingKey: String): Flow<Boolean>
 
-    @Query("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE ratingKey = :ratingKey)")
+    @Query("SELECT EXISTS(SELECT 1 FROM downloaded_tracks WHERE ratingKey = :ratingKey AND status = 'completed')")
     suspend fun isTrackDownloaded(ratingKey: String): Boolean
+
+    @Query("SELECT * FROM downloaded_tracks WHERE ratingKey = :ratingKey LIMIT 1")
+    suspend fun getDownloadedTrack(ratingKey: String): DownloadedTrackEntity?
+
+    @Query("UPDATE downloaded_tracks SET status = :status, errorMessage = :errorMessage WHERE ratingKey = :ratingKey")
+    suspend fun updateDownloadStatus(ratingKey: String, status: String, errorMessage: String? = null)
+
+    @Query("DELETE FROM downloaded_tracks")
+    suspend fun clearDownloadedTracks()
+
+    @Query("SELECT * FROM playback_state WHERE id = 1")
+    suspend fun getPlaybackState(): PlaybackStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun savePlaybackState(state: PlaybackStateEntity)
+
+    @Query("SELECT * FROM listening_history WHERE ratingKey = :ratingKey LIMIT 1")
+    suspend fun getListeningHistory(ratingKey: String): ListeningHistoryEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveListeningHistory(history: ListeningHistoryEntity)
 
     // Liked tracks
     @Query("SELECT * FROM liked_tracks ORDER BY likedAt DESC")
@@ -175,9 +227,11 @@ interface MusicDao {
         PlaylistEntity::class,
         PlaylistTrackEntity::class,
         DownloadedTrackEntity::class,
-        LikedTrackEntity::class
+        LikedTrackEntity::class,
+        PlaybackStateEntity::class,
+        ListeningHistoryEntity::class
     ],
-    version = 4,
+    version = 7,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -223,7 +277,8 @@ fun DownloadedTrackEntity.toTrackItem(): com.example.playback.TrackItem {
         album = this.album,
         key = this.key,
         thumb = this.thumb,
-        duration = this.duration
+        duration = this.duration,
+        localPath = this.localPath
     )
 }
 

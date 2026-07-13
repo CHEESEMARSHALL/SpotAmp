@@ -18,6 +18,13 @@ import com.example.data.RadioType
 import com.example.data.toTrackItem
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.example.data.TrackDownloadWorker
+import java.util.concurrent.TimeUnit
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val repository = MusicRepository(application)
@@ -135,6 +142,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _normalizationEnabledFlow = MutableStateFlow(repository.settings.normalizationEnabled)
     val normalizationEnabledFlow: StateFlow<Boolean> = _normalizationEnabledFlow.asStateFlow()
+
+    private val _gaplessEnabledFlow = MutableStateFlow(repository.settings.gaplessEnabled)
+    val gaplessEnabledFlow: StateFlow<Boolean> = _gaplessEnabledFlow.asStateFlow()
 
     private val _lastFmEnabledFlow = MutableStateFlow(repository.settings.lastFmEnabled)
     val lastFmEnabledFlow: StateFlow<Boolean> = _lastFmEnabledFlow.asStateFlow()
@@ -278,16 +288,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun startDownload(track: TrackItem) {
         viewModelScope.launch {
             if (repository.isTrackDownloaded(track.ratingKey)) return@launch
-            // Simulate download progress
-            _downloadProgresses.value = _downloadProgresses.value + (track.ratingKey to 0.01f)
-            for (i in 1..10) {
-                kotlinx.coroutines.delay(150)
-                _downloadProgresses.value = _downloadProgresses.value + (track.ratingKey to (i / 10f))
-            }
-            // Add track with simulated file size (around 3MB - 12MB)
-            val simulatedSize = if (track.duration > 0) track.duration * 125L else (3..8).random() * 1024L * 1024L
-            repository.addDownloadedTrack(track, simulatedSize)
-            _downloadProgresses.value = _downloadProgresses.value - track.ratingKey
+            repository.queueDownload(track)
+            val request = OneTimeWorkRequestBuilder<TrackDownloadWorker>()
+                .addTag("spotamp_download")
+                .setInputData(workDataOf(
+                    TrackDownloadWorker.KEY_RATING_KEY to track.ratingKey,
+                    TrackDownloadWorker.KEY_TITLE to track.title,
+                    TrackDownloadWorker.KEY_ARTIST to track.artist,
+                    TrackDownloadWorker.KEY_ALBUM to track.album,
+                    TrackDownloadWorker.KEY_KEY to track.key,
+                    TrackDownloadWorker.KEY_THUMB to track.thumb,
+                    TrackDownloadWorker.KEY_DURATION to track.duration
+                ))
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+                .build()
+            WorkManager.getInstance(getApplication()).enqueueUniqueWork(
+                "download_${track.ratingKey}",
+                androidx.work.ExistingWorkPolicy.KEEP,
+                request
+            )
         }
     }
 
@@ -325,7 +345,19 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteDownload(ratingKey: String) {
         viewModelScope.launch {
+            WorkManager.getInstance(getApplication()).cancelUniqueWork("download_$ratingKey")
             repository.deleteDownloadedTrack(ratingKey)
+        }
+    }
+
+    fun retryDownload(track: com.example.data.DownloadedTrackEntity) {
+        startDownload(track.toTrackItem())
+    }
+
+    fun deleteAllDownloads() {
+        viewModelScope.launch {
+            WorkManager.getInstance(getApplication()).cancelAllWorkByTag("spotamp_download")
+            repository.deleteAllDownloads()
         }
     }
 

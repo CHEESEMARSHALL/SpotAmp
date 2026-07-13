@@ -7,8 +7,10 @@ import com.example.playback.TrackItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import okhttp3.Request
+import java.io.File
 
-class MusicRepository(context: Context) {
+class MusicRepository(private val context: Context) {
     private val musicDao = MusicDatabase.getDatabase(context).musicDao()
     val settings = PlexSettingsManager(context)
 
@@ -101,7 +103,7 @@ class MusicRepository(context: Context) {
         musicDao.deleteLikedTrack(ratingKey)
     }
 
-    suspend fun addDownloadedTrack(track: TrackItem, fileSize: Long) = withContext(Dispatchers.IO) {
+    suspend fun addDownloadedTrack(track: TrackItem, fileSize: Long, localPath: String) = withContext(Dispatchers.IO) {
         musicDao.insertDownloadedTrack(
             DownloadedTrackEntity(
                 ratingKey = track.ratingKey,
@@ -111,13 +113,67 @@ class MusicRepository(context: Context) {
                 key = track.key,
                 thumb = track.thumb,
                 duration = track.duration,
-                fileSize = fileSize
+                fileSize = fileSize,
+                localPath = localPath
             )
         )
     }
 
     suspend fun deleteDownloadedTrack(ratingKey: String) = withContext(Dispatchers.IO) {
+        musicDao.getDownloadedTrack(ratingKey)?.localPath?.let { File(it).delete() }
         musicDao.deleteDownloadedTrack(ratingKey)
+    }
+
+    suspend fun deleteAllDownloads() = withContext(Dispatchers.IO) {
+        musicDao.getDownloadedTracksList().forEach { it.localPath?.let { path -> File(path).delete() } }
+        musicDao.clearDownloadedTracks()
+    }
+
+    suspend fun queueDownload(track: TrackItem) = withContext(Dispatchers.IO) {
+        musicDao.insertDownloadedTrack(
+            DownloadedTrackEntity(
+                ratingKey = track.ratingKey,
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                key = track.key,
+                thumb = track.thumb,
+                duration = track.duration,
+                fileSize = 0L,
+                status = "queued"
+            )
+        )
+    }
+
+    suspend fun markDownloadStatus(ratingKey: String, status: String, errorMessage: String? = null) = withContext(Dispatchers.IO) {
+        musicDao.updateDownloadStatus(ratingKey, status, errorMessage)
+    }
+
+    suspend fun downloadTrack(track: TrackItem, onProgress: (Float) -> Unit = {}): DownloadedTrackEntity = withContext(Dispatchers.IO) {
+        if (!settings.isConfigured) throw IllegalStateException("Plex server is not configured.")
+        val targetDir = context.getExternalFilesDir("music") ?: File(context.filesDir, "music")
+        targetDir.mkdirs()
+        val extension = track.key.substringAfterLast('.', "mp3").takeIf { it.length in 2..5 } ?: "mp3"
+        val target = File(targetDir, "${track.ratingKey}.$extension")
+        val url = "${settings.baseUrl.trimEnd('/')}${track.key}"
+        val request = Request.Builder().url(url).header("X-Plex-Token", settings.token).build()
+        val response = okhttp3.OkHttpClient().newCall(request).execute()
+        if (!response.isSuccessful) throw IllegalStateException("Plex download failed: HTTP ${response.code}")
+        val body = response.body ?: throw IllegalStateException("Plex returned an empty audio file.")
+        val total = body.contentLength()
+        body.byteStream().use { input -> target.outputStream().use { output ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var copied = 0L
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                output.write(buffer, 0, read)
+                copied += read
+                if (total > 0) onProgress(copied.toFloat() / total)
+            }
+        }}
+        addDownloadedTrack(track, target.length(), target.absolutePath)
+        musicDao.getDownloadedTrack(track.ratingKey) ?: error("Downloaded track was not indexed")
     }
 
     private fun getService(): PlexApiService {
@@ -200,15 +256,31 @@ class MusicRepository(context: Context) {
     suspend fun searchPlex(query: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptyList()
         try {
+            if (!settings.isConfigured) return@withContext searchCachedTracks(query)
             val response = getService().globalSearch(query, settings.token)
             response.mediaContainer.metadata?.filter { 
                 it.type == "artist" || it.type == "album" || it.type == "track" 
-            } ?: emptyList()
+            } ?: searchCachedTracks(query)
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error searching Plex", e)
-            emptyList()
+            searchCachedTracks(query)
         }
     }
+
+    private suspend fun searchCachedTracks(query: String): List<PlexMetadata> =
+        musicDao.searchCachedTracks(query).map { track ->
+            PlexMetadata(
+                ratingKey = track.ratingKey,
+                key = track.key,
+                title = track.title,
+                type = "track",
+                thumb = track.thumb,
+                parentTitle = track.album,
+                grandparentTitle = track.artist,
+                duration = track.duration,
+                media = listOf(PlexMedia(listOf(PlexPart(track.key))))
+            )
+        }
 
     suspend fun syncTrackCache(sectionId: String) = withContext(Dispatchers.IO) {
         try {
