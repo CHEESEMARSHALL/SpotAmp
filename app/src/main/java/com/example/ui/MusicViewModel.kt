@@ -12,6 +12,7 @@ import com.example.data.RadioRequest
 import com.example.data.RadioService
 import com.example.data.DiscoveryLevel
 import com.example.data.RecentTrack
+import com.example.data.LibrarySyncState
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
 import com.example.data.HomeFeedState
@@ -93,6 +94,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val recentlyPlayed: StateFlow<List<RecentTrack>> = repository.recentlyPlayed
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val cachedTracks: StateFlow<List<CachedTrack>> = repository.cachedTracksCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _cachedCount = MutableStateFlow(0)
     val cachedCount: StateFlow<Int> = _cachedCount.asStateFlow()
 
@@ -100,8 +104,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _syncing = MutableStateFlow(false)
-    val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+    private val _syncState = MutableStateFlow<LibrarySyncState>(LibrarySyncState.Idle)
+    val syncState: StateFlow<LibrarySyncState> = _syncState.asStateFlow()
 
     private val _aiLoading = MutableStateFlow(false)
     val aiLoading: StateFlow<Boolean> = _aiLoading.asStateFlow()
@@ -115,8 +119,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // Combined Reactive Home Feed State Flow
     val homeFeedState: StateFlow<HomeFeedState> = combine(
         recentlyAddedAlbums,
-        recentlyPlayed
-    ) { recentAdded, history ->
+        recentlyPlayed,
+        cachedTracks
+    ) { recentAdded, history, cached ->
         recommendationEngine.generateHomeFeed(recentAdded, history)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HomeFeedState())
 
@@ -209,6 +214,21 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun updateLastFmSessionKey(sessionKey: String) {
         repository.settings.lastFmSessionKey = sessionKey
         _lastFmSessionKeyFlow.value = sessionKey
+    }
+
+    fun playTrackFromCache(track: CachedTrack) {
+        viewModelScope.launch {
+            val trackItem = com.example.playback.TrackItem(
+                ratingKey = track.ratingKey,
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                key = track.key,
+                thumb = track.thumb,
+                duration = track.duration
+            )
+            playbackManager.playTrack(trackItem, emptyList())
+        }
     }
 
     fun toggleLikeTrack(track: TrackItem) {
@@ -679,15 +699,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val section = _selectedSectionId.value
         if (section.isEmpty()) return
         viewModelScope.launch {
-            _syncing.value = true
+            _syncState.value = LibrarySyncState.Connecting
             _errorMessage.value = null
             try {
-                repository.syncTrackCache(section)
+                repository.syncTrackCache(section) { state ->
+                    _syncState.value = state
+                }
                 loadCachedCount()
             } catch (e: Exception) {
-                _errorMessage.value = "Failed to sync track cache: ${e.localizedMessage}"
-            } finally {
-                _syncing.value = false
+                // Error handled in repository and passed via state
             }
         }
     }

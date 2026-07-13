@@ -324,38 +324,65 @@ class MusicRepository(private val context: Context) {
             )
         }
 
-    suspend fun syncTrackCache(sectionId: String) = withContext(Dispatchers.IO) {
+    suspend fun syncTrackCache(sectionId: String, onProgress: (LibrarySyncState) -> Unit) = withContext(Dispatchers.IO) {
+        onProgress(LibrarySyncState.Connecting)
         try {
-            val tracks = PlexPagination.collect(pageSize = 200) { offset, limit ->
-                getService().getLibraryItems(sectionId, "10", offset, limit, settings.token)
+            // Clear the cache before starting the sync
+            musicDao.clearCachedTracks()
+
+            var totalReceived = 0
+            var validCount = 0
+            var skippedCount = 0
+            var offset = 0
+            val pageSize = 200
+
+            while (true) {
+                onProgress(LibrarySyncState.Fetching(offset / pageSize + 1, totalReceived))
+                val page = getService().getLibraryItems(sectionId, "10", offset, pageSize, settings.token)
                     .mediaContainer.metadata.orEmpty()
+                
+                if (page.isEmpty()) break
+                
+                totalReceived += page.size
+
+                val entities = page.map { track ->
+                    val trackKey = track.media?.firstOrNull()?.part?.firstOrNull()?.key
+                    if (trackKey.isNullOrEmpty()) {
+                        skippedCount++
+                        null
+                    } else {
+                        validCount++
+                        CachedTrack(
+                            ratingKey = track.ratingKey,
+                            title = track.title,
+                            artist = track.grandparentTitle ?: track.parentTitle ?: "Unknown Artist",
+                            album = track.parentTitle ?: "Unknown Album",
+                            key = trackKey,
+                            thumb = track.thumb ?: "",
+                            duration = track.duration ?: 0L,
+                            year = track.year,
+                            addedAt = track.addedAt,
+                            playCount = track.viewCount ?: 0,
+                            lastPlayedAt = track.lastViewedAt,
+                            genres = track.genres.orEmpty().joinToString("|") { it.tag },
+                            collections = track.collections.orEmpty().joinToString("|") { it.tag }
+                        )
+                    }
+                }.filterNotNull()
+
+                musicDao.insertCachedTracks(entities)
+                
+                onProgress(LibrarySyncState.Processing(totalReceived, validCount, skippedCount))
+
+                if (page.size < pageSize) break
+                offset += page.size
             }
             
-            val entities = tracks.map { track ->
-                val trackKey = track.media?.firstOrNull()?.part?.firstOrNull()?.key ?: ""
-                CachedTrack(
-                    ratingKey = track.ratingKey,
-                    title = track.title,
-                    artist = track.grandparentTitle ?: track.parentTitle ?: "Unknown Artist",
-                    album = track.parentTitle ?: "Unknown Album",
-                    key = trackKey,
-                    thumb = track.thumb ?: "",
-                    duration = track.duration ?: 0L,
-                    year = track.year,
-                    addedAt = track.addedAt,
-                    playCount = track.viewCount ?: 0,
-                    lastPlayedAt = track.lastViewedAt,
-                    genres = track.genres.orEmpty().joinToString("|") { it.tag },
-                    collections = track.collections.orEmpty().joinToString("|") { it.tag }
-                )
-            }.filter { it.key.isNotEmpty() }
-
-            if (TrackCacheSyncPolicy.shouldReplaceCache(entities)) {
-                musicDao.clearCachedTracks()
-                musicDao.insertCachedTracks(entities)
-            }
+            Log.d("MusicRepository", "Sync complete: indexed $validCount tracks, skipped $skippedCount")
+            onProgress(LibrarySyncState.Complete(validCount, skippedCount, 0))
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error syncing track cache", e)
+            onProgress(LibrarySyncState.Failed("Sync failed", e.localizedMessage ?: "Unknown error", "Indexing"))
             throw e
         }
     }

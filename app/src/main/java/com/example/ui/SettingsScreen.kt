@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.LibraryCleanupSuggestion
 import com.example.data.LibraryCleanupSuggestionService
+import com.example.data.LibrarySyncState
 
 @Composable
 fun SettingsScreen(
@@ -38,7 +39,7 @@ fun SettingsScreen(
     val queue by viewModel.playbackManager.queue.collectAsStateWithLifecycle()
     
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
-    val syncing by viewModel.syncing.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncState.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
 
     var baseUrlInput by remember { mutableStateOf(viewModel.repository.settings.baseUrl) }
@@ -75,7 +76,7 @@ fun SettingsScreen(
             text = "Settings",
             style = MaterialTheme.typography.headlineMedium.copy(
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = MaterialTheme.colorScheme.onBackground
             ),
             modifier = Modifier.padding(bottom = 24.dp)
         )
@@ -88,9 +89,9 @@ fun SettingsScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.HealthAndSafety, contentDescription = "Device readiness", tint = Color(0xFF34D399))
+                    Icon(Icons.Rounded.HealthAndSafety, contentDescription = "Device readiness", tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
-                    Text("Device Readiness", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("Device Readiness", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 }
                 Spacer(Modifier.height(12.dp))
                 DiagnosticRow("Plex connection", if (isConfigured) "Configured" else "Not configured", isConfigured)
@@ -468,13 +469,20 @@ fun SettingsScreen(
                             Column {
                                 Text(
                                     "Indexed Songs",
-                                    color = Color.White,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp
                                 )
                                 Text(
-                                    "$cachedCount tracks cached",
-                                    color = Color(0xFF818CF8),
+                                    when (val state = syncState) {
+                                        is LibrarySyncState.Fetching -> "Fetching page ${state.page}..."
+                                        is LibrarySyncState.Processing -> "Processed ${state.validCount} tracks..."
+                                        is LibrarySyncState.Saving -> "Saving ${state.validCount} tracks..."
+                                        is LibrarySyncState.Complete -> "${state.indexedCount} tracks indexed"
+                                        is LibrarySyncState.Failed -> "Sync failed: ${state.userMessage}"
+                                        else -> "$cachedCount tracks cached"
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -482,7 +490,7 @@ fun SettingsScreen(
 
                             Button(
                                 onClick = { viewModel.syncLibraryCache() },
-                                enabled = !syncing,
+                                enabled = syncState is LibrarySyncState.Idle || syncState is LibrarySyncState.Complete || syncState is LibrarySyncState.Failed,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (cachedCount > 0) Color.White.copy(alpha = 0.1f) else Color(0xFF8B5CF6),
                                     contentColor = if (cachedCount > 0) Color.White else Color.White
@@ -490,7 +498,7 @@ fun SettingsScreen(
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.testTag("sync_index_button")
                             ) {
-                                if (syncing) {
+                                if (syncState is LibrarySyncState.Connecting || syncState is LibrarySyncState.Fetching || syncState is LibrarySyncState.Processing || syncState is LibrarySyncState.Saving) {
                                     CircularProgressIndicator(
                                         color = if (cachedCount > 0) Color.White else Color.Black,
                                         modifier = Modifier.size(18.dp),

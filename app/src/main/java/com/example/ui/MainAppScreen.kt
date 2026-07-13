@@ -69,38 +69,42 @@ fun MainAppScreen(
     }
 
     val activeTheme by viewModel.activeThemeFlow.collectAsStateWithLifecycle()
+    val currentTrack by viewModel.playbackManager.currentTrack.collectAsStateWithLifecycle()
 
     MyApplicationTheme(activeTheme = activeTheme) {
+        val background = MaterialTheme.colorScheme.background
+        val primary = MaterialTheme.colorScheme.primary
+        val secondary = MaterialTheme.colorScheme.secondary
+
         BoxWithConstraints(
             modifier = modifier
                 .fillMaxSize()
                 .drawBehind {
-                // Background dark base
-                drawRect(color = Color(0xFF080808))
-                
-                // Top-left Midnight Indigo atmospheric blend
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF6366F1).copy(alpha = 0.15f), Color.Transparent),
+                    drawRect(color = background)
+                    
+                    // Top-left atmospheric blend
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(primary.copy(alpha = 0.15f), Color.Transparent),
+                            center = Offset(-100f, -100f),
+                            radius = size.minDimension * 0.9f
+                        ),
                         center = Offset(-100f, -100f),
                         radius = size.minDimension * 0.9f
-                    ),
-                    center = Offset(-100f, -100f),
-                    radius = size.minDimension * 0.9f
-                )
-                
-                // Top-right Purple ambient glow
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFF8B5CF6).copy(alpha = 0.10f), Color.Transparent),
+                    )
+                    
+                    // Top-right ambient glow
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(secondary.copy(alpha = 0.10f), Color.Transparent),
+                            center = Offset(size.width + 100f, size.height * 0.25f),
+                            radius = size.minDimension * 0.7f
+                        ),
                         center = Offset(size.width + 100f, size.height * 0.25f),
                         radius = size.minDimension * 0.7f
-                    ),
-                    center = Offset(size.width + 100f, size.height * 0.25f),
-                    radius = size.minDimension * 0.7f
-                )
-            }
-    ) {
+                    )
+                }
+        ) {
         val isWideScreen = maxWidth >= 600.dp
 
         Row(modifier = Modifier.fillMaxSize()) {
@@ -214,17 +218,23 @@ fun MainAppScreen(
             Scaffold(
                 bottomBar = {
                     if (!isWideScreen) {
+                        val surfaceColor = MaterialTheme.colorScheme.surface
+                        val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+                        val outlineVariantColor = MaterialTheme.colorScheme.outlineVariant
+
                         NavigationBar(
-                            containerColor = Color.Black.copy(alpha = 0.6f),
-                            contentColor = Color(0xFF818CF8),
-                            modifier = Modifier.drawBehind {
-                                drawLine(
-                                    color = Color.White.copy(alpha = 0.05f),
-                                    start = Offset(0f, 0f),
-                                    end = Offset(size.width, 0f),
-                                    strokeWidth = 1.dp.toPx()
-                                )
-                            }
+                            containerColor = surfaceColor.copy(alpha = 0.9f),
+                            contentColor = onSurfaceColor,
+                            modifier = Modifier
+                                .navigationBarsPadding()
+                                .drawBehind {
+                                    drawLine(
+                                        color = outlineVariantColor.copy(alpha = 0.5f),
+                                        start = Offset(0f, 0f),
+                                        end = Offset(size.width, 0f),
+                                        strokeWidth = 1.dp.toPx()
+                                    )
+                                }
                         ) {
                             NavigationBarItem(
                                 selected = currentScreen is Screen.Home,
@@ -322,7 +332,7 @@ fun MainAppScreen(
                         .padding(innerPadding)
                 ) {
                     // Content Layer with Crossfade Animations
-                    Box(modifier = Modifier.fillMaxSize().padding(bottom = 64.dp)) {
+                    Box(modifier = Modifier.fillMaxSize().padding(bottom = if (currentTrack != null) 64.dp else 0.dp)) {
                         when (currentScreen) {
                             is Screen.Home -> HomeScreen(
                                 viewModel = viewModel,
@@ -376,6 +386,7 @@ fun MainAppScreen(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
+                            .navigationBarsPadding()
                     ) {
                         BottomMiniPlayer(
                             playbackManager = viewModel.playbackManager,

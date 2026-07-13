@@ -32,6 +32,9 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.PlexMetadata
 
+enum class ViewMode { Grid, List }
+enum class SortOption { Name, RecentlyAdded }
+
 @Composable
 fun LibraryScreen(
     viewModel: MusicViewModel,
@@ -56,10 +59,22 @@ fun LibraryScreen(
             .map { it.artist.lowercase() }
             .toSet()
     }
+    val cachedTracks by viewModel.cachedTracks.collectAsStateWithLifecycle()
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var offlineOnly by remember { mutableStateOf(viewModel.repository.settings.offlineOnly) }
-    val tabs = listOf("Artists", "Albums", "Playlists")
+    
+    // View modes
+    var artistViewMode by remember { mutableStateOf(ViewMode.Grid) }
+    var albumViewMode by remember { mutableStateOf(ViewMode.Grid) }
+    
+    // Sorting
+    var artistSort by remember { mutableStateOf(SortOption.Name) }
+    var albumSort by remember { mutableStateOf(SortOption.Name) }
+    var songSort by remember { mutableStateOf(SortOption.Name) }
+    var playlistSort by remember { mutableStateOf(SortOption.Name) }
+    
+    val tabs = listOf("Artists", "Albums", "Songs", "Playlists")
 
     var activeContextMenu by remember { mutableStateOf<ContextMenuItem?>(null) }
 
@@ -141,17 +156,59 @@ fun LibraryScreen(
                 color = Color.White.copy(alpha = 0.55f),
                 style = MaterialTheme.typography.bodySmall
             )
-            FilterChip(
-                selected = offlineOnly,
-                onClick = {
-                    offlineOnly = !offlineOnly
-                    viewModel.repository.settings.offlineOnly = offlineOnly
-                },
-                label = { Text("Offline only") },
-                leadingIcon = if (offlineOnly) {
-                    { Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                } else null
-            )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // View Mode Toggle (Grid/List)
+                if (selectedTab == 0 || selectedTab == 1) {
+                    IconButton(
+                        onClick = {
+                            if (selectedTab == 0) artistViewMode = if (artistViewMode == ViewMode.Grid) ViewMode.List else ViewMode.Grid
+                            else albumViewMode = if (albumViewMode == ViewMode.Grid) ViewMode.List else ViewMode.Grid
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if ((selectedTab == 0 && artistViewMode == ViewMode.Grid) || (selectedTab == 1 && albumViewMode == ViewMode.Grid)) Icons.Rounded.List else Icons.Rounded.GridView,
+                            contentDescription = "Toggle view mode",
+                            tint = Color.White
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
+
+                // Sorting (Simplified toggle for now: Name <-> Recent)
+                IconButton(
+                    onClick = {
+                        when (selectedTab) {
+                            0 -> artistSort = if (artistSort == SortOption.Name) SortOption.RecentlyAdded else SortOption.Name
+                            1 -> albumSort = if (albumSort == SortOption.Name) SortOption.RecentlyAdded else SortOption.Name
+                            2 -> songSort = if (songSort == SortOption.Name) SortOption.RecentlyAdded else SortOption.Name
+                            3 -> playlistSort = if (playlistSort == SortOption.Name) SortOption.RecentlyAdded else SortOption.Name
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Sort,
+                        contentDescription = "Sort",
+                        tint = Color.White
+                    )
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                FilterChip(
+                    selected = offlineOnly,
+                    onClick = {
+                        offlineOnly = !offlineOnly
+                        viewModel.repository.settings.offlineOnly = offlineOnly
+                    },
+                    label = { Text("Offline") },
+                    leadingIcon = if (offlineOnly) {
+                        { Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null
+                )
+            }
         }
 
         if (isLoading && artists.isEmpty() && albums.isEmpty()) {
@@ -164,18 +221,25 @@ fun LibraryScreen(
         } else {
             Box(modifier = Modifier.weight(1f)) {
                 when (selectedTab) {
-                    0 -> { // Artists Grid
+                    0 -> { // Artists
                         val visibleArtists = if (offlineOnly) artists.filter { it.title.lowercase() in downloadedArtists } else artists
-                        if (visibleArtists.isEmpty()) {
+                        val sortedArtists = remember(visibleArtists, artistSort) {
+                            when (artistSort) {
+                                SortOption.Name -> visibleArtists.sortedBy { it.title.lowercase() }
+                                SortOption.RecentlyAdded -> visibleArtists.sortedByDescending { it.addedAt ?: 0L }
+                            }
+                        }
+                        
+                        if (sortedArtists.isEmpty()) {
                             EmptyLibraryState("No artists found in this library.")
-                        } else {
+                        } else if (artistViewMode == ViewMode.Grid) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(2),
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(visibleArtists) { artist ->
+                                items(sortedArtists) { artist ->
                                     ArtistGridItem(
                                         artist = artist, 
                                         baseUrl = viewModel.repository.settings.baseUrl, 
@@ -193,20 +257,35 @@ fun LibraryScreen(
                                     }
                                 }
                             }
+                        } else {
+                            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(sortedArtists) { artist ->
+                                    // Simple List Item for Artist
+                                    Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToArtist(artist.ratingKey, artist.title) }.padding(8.dp)) {
+                                        Text(artist.title, color = Color.White)
+                                    }
+                                }
+                            }
                         }
                     }
-                    1 -> { // Albums Grid
+                    1 -> { // Albums
                         val visibleAlbums = if (offlineOnly) albums.filter { it.title.lowercase() in downloadedAlbums } else albums
-                        if (visibleAlbums.isEmpty()) {
+                        val sortedAlbums = remember(visibleAlbums, albumSort) {
+                            when (albumSort) {
+                                SortOption.Name -> visibleAlbums.sortedBy { it.title.lowercase() }
+                                SortOption.RecentlyAdded -> visibleAlbums.sortedByDescending { it.addedAt ?: 0L }
+                            }
+                        }
+                        if (sortedAlbums.isEmpty()) {
                             EmptyLibraryState("No albums found in this library.")
-                        } else {
+                        } else if (albumViewMode == ViewMode.Grid) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(2),
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(visibleAlbums) { album ->
+                                items(sortedAlbums) { album ->
                                     AlbumGridItem(
                                         album = album, 
                                         baseUrl = viewModel.repository.settings.baseUrl, 
@@ -225,9 +304,42 @@ fun LibraryScreen(
                                     }
                                 }
                             }
+                        } else {
+                             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(sortedAlbums) { album ->
+                                    // Simple List Item for Album
+                                    Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToAlbum(album.ratingKey, album.title) }.padding(8.dp)) {
+                                        Text(album.title, color = Color.White)
+                                    }
+                                }
+                            }
                         }
                     }
-                    2 -> { // Playlists Dashboard (controlled AI/local intent + lists)
+                    2 -> { // Songs
+                        val visibleTracks = if (offlineOnly) cachedTracks.filter { it.key.isNotEmpty() } else cachedTracks
+                        val sortedTracks = remember(visibleTracks, songSort) {
+                            when (songSort) {
+                                SortOption.Name -> visibleTracks.sortedBy { it.title.lowercase() }
+                                SortOption.RecentlyAdded -> visibleTracks.sortedByDescending { it.addedAt ?: 0L }
+                            }
+                        }
+                        if (sortedTracks.isEmpty()) {
+                            EmptyLibraryState("No songs found in this library.")
+                        } else {
+                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                items(sortedTracks) { track ->
+                                    TrackRow(
+                                        track = track,
+                                        baseUrl = viewModel.repository.settings.baseUrl,
+                                        token = viewModel.repository.settings.token,
+                                        onMoreClick = { /* TODO */ },
+                                        onClick = { viewModel.playTrackFromCache(track) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    3 -> { // Playlists Dashboard (controlled AI/local intent + lists)
                         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
                         val aiLoading by viewModel.aiLoading.collectAsStateWithLifecycle()
                         val aiError by viewModel.aiError.collectAsStateWithLifecycle()
