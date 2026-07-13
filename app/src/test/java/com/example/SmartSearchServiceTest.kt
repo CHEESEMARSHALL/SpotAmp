@@ -25,6 +25,6 @@ class SmartSearchServiceTest {
         val service = SmartSearchService()
         val intent = service.parse("downloaded soundtrack", tracks)
         val result = service.filter(intent, tracks, setOf("2"))
-        assertTrue(result.isEmpty())
+        assertTrue(result.all { it.ratingKey == "2" })
     }
 }

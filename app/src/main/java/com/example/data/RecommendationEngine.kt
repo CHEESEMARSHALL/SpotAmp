@@ -47,6 +47,8 @@ data class SmartSearchIntent(
 )
 
 class SmartSearchService {
+    private val stopWords = setOf("the", "and", "from", "with", "show", "find", "music", "songs", "albums", "tracks", "that", "have", "been", "only")
+
     fun parse(query: String, cachedTracks: List<CachedTrack>): SmartSearchIntent {
         val normalized = query.lowercase(Locale.ROOT)
         val artists = cachedTracks.map { it.artist }.distinct().filter { normalized.contains(it.lowercase(Locale.ROOT)) }
@@ -58,7 +60,9 @@ class SmartSearchService {
         val decade = Regex("(19|20)\\d0s").find(normalized)?.value?.take(4)?.toIntOrNull()
         val minPlayCount = Regex("(\\d+)\\s*(?:plays|times)").find(normalized)?.groupValues?.getOrNull(1)?.toIntOrNull()
         return SmartSearchIntent(
-            textTerms = query.split(Regex("\\s+" )).filter { it.length > 2 },
+            textTerms = query.lowercase(Locale.ROOT).split(Regex("\\s+"))
+                .map { it.trim(',', '.', '!', '?') }
+                .filter { it.length > 2 && it !in stopWords && !it.matches(Regex("(19|20)\\d0s")) },
             artists = artists,
             albums = albums,
             genres = genreWords,
@@ -74,6 +78,8 @@ class SmartSearchService {
         return tracks.map { track ->
             var score = 0
             val haystack = "${track.title} ${track.artist} ${track.album} ${track.genres} ${track.collections}".lowercase(Locale.ROOT)
+            val genreMatch = intent.genres.isEmpty() || intent.genres.any { haystack.contains(it) }
+            if (!genreMatch) return@map track to -1
             if (intent.artists.any { track.artist.equals(it, true) }) score += 100
             if (intent.albums.any { track.album.equals(it, true) }) score += 100
             if (intent.genres.any { haystack.contains(it) }) score += 40
@@ -81,8 +87,8 @@ class SmartSearchService {
             if (intent.decade != null && track.year?.let { it in intent.decade..(intent.decade + 9) } == true) score += 30
             if (intent.recentlyPlayed && track.lastPlayedAt != null) score += 30
             if (intent.minPlayCount != null && track.playCount >= intent.minPlayCount) score += 30
-            if (intent.downloadedOnly && track.ratingKey !in downloadedKeys) score = -1
             intent.textTerms.filter { haystack.contains(it.lowercase(Locale.ROOT)) }.forEach { score += 5 }
+            if (intent.downloadedOnly && track.ratingKey !in downloadedKeys) score = -1
             track to score
         }.filter { it.second >= 0 && (it.second > 0 || intent.textTerms.isEmpty()) }
             .sortedWith(compareByDescending<Pair<CachedTrack, Int>> { it.second }.thenBy { it.first.ratingKey })
