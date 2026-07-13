@@ -10,6 +10,16 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import java.io.File
 
+internal fun <T> deterministicTrackSample(items: List<T>, maxItems: Int): List<T> {
+    if (maxItems <= 0 || items.isEmpty()) return emptyList()
+    val ordered = items.toList()
+    if (ordered.size <= maxItems) return ordered
+    if (maxItems == 1) return listOf(ordered.first())
+    return (0 until maxItems).map { index ->
+        ordered[index * ordered.lastIndex / (maxItems - 1)]
+    }
+}
+
 class MusicRepository(private val context: Context) {
     private val musicDao = MusicDatabase.getDatabase(context).musicDao()
     val settings = PlexSettingsManager(context)
@@ -157,23 +167,30 @@ class MusicRepository(private val context: Context) {
         val target = File(targetDir, "${track.ratingKey}.$extension")
         val url = "${settings.baseUrl.trimEnd('/')}${track.key}"
         val request = Request.Builder().url(url).header("X-Plex-Token", settings.token).build()
-        val response = okhttp3.OkHttpClient().newCall(request).execute()
-        if (!response.isSuccessful) throw IllegalStateException("Plex download failed: HTTP ${response.code}")
-        val body = response.body ?: throw IllegalStateException("Plex returned an empty audio file.")
-        val total = body.contentLength()
-        body.byteStream().use { input -> target.outputStream().use { output ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            var copied = 0L
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                output.write(buffer, 0, read)
-                copied += read
-                if (total > 0) onProgress(copied.toFloat() / total)
+        var completed = false
+        try {
+            okhttp3.OkHttpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IllegalStateException("Plex download failed: HTTP ${response.code}")
+                val body = response.body ?: throw IllegalStateException("Plex returned an empty audio file.")
+                val total = body.contentLength()
+                body.byteStream().use { input -> target.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var copied = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        copied += read
+                        if (total > 0) onProgress(copied.toFloat() / total)
+                    }
+                }}
             }
-        }}
-        addDownloadedTrack(track, target.length(), target.absolutePath)
-        musicDao.getDownloadedTrack(track.ratingKey) ?: error("Downloaded track was not indexed")
+            addDownloadedTrack(track, target.length(), target.absolutePath)
+            completed = true
+            musicDao.getDownloadedTrack(track.ratingKey) ?: error("Downloaded track was not indexed")
+        } finally {
+            if (!completed) target.delete()
+        }
     }
 
     private fun getService(): PlexApiService {
@@ -186,10 +203,16 @@ class MusicRepository(private val context: Context) {
     suspend fun getLibraries(): List<PlexDirectory> = withContext(Dispatchers.IO) {
         try {
             val response = getService().getLibraries(settings.token)
-            response.mediaContainer.directory?.filter { it.type == "artist" } ?: emptyList()
+            val directories = response.mediaContainer.directory.orEmpty()
+            Log.d("MusicRepository", "Plex library response parsed: ${directories.size} sections")
+            // Plex normally reports music sections as type "artist". Some
+            // compatible servers expose the same section as "music".
+            directories.musicLibraries()
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error fetching libraries", e)
-            emptyList()
+            // Preserve the failure so the UI can distinguish an unreachable
+            // server from a reachable server with no music sections.
+            throw e
         }
     }
 
@@ -303,15 +326,9 @@ class MusicRepository(private val context: Context) {
 
     suspend fun syncTrackCache(sectionId: String) = withContext(Dispatchers.IO) {
         try {
-            val pageSize = 200
-            val tracks = mutableListOf<PlexMetadata>()
-            var offset = 0
-            while (true) {
-                val page = getService().getLibraryItems(sectionId, "10", offset, pageSize, settings.token)
+            val tracks = PlexPagination.collect(pageSize = 200) { offset, limit ->
+                getService().getLibraryItems(sectionId, "10", offset, limit, settings.token)
                     .mediaContainer.metadata.orEmpty()
-                tracks += page
-                if (page.size < pageSize) break
-                offset += page.size
             }
             
             val entities = tracks.map { track ->
@@ -333,7 +350,7 @@ class MusicRepository(private val context: Context) {
                 )
             }.filter { it.key.isNotEmpty() }
 
-            if (entities.isNotEmpty()) {
+            if (TrackCacheSyncPolicy.shouldReplaceCache(entities)) {
                 musicDao.clearCachedTracks()
                 musicDao.insertCachedTracks(entities)
             }
@@ -349,13 +366,13 @@ class MusicRepository(private val context: Context) {
             throw IllegalStateException("Your music library has not been indexed yet. Please go to Settings to index your music library.")
         }
 
-        // Diversified sampling to respect token limit. Max 200 tracks.
-        val sampledTracks = if (cachedTracks.size <= 200) {
-            cachedTracks
-        } else {
-            // Select 200 tracks randomly distributed across the library
-            cachedTracks.shuffled().take(200)
-        }
+        // Deterministic sampling to respect token limit. Max 200 tracks.
+        // The model may only choose from this context, so the same library state
+        // must produce the same candidate set across retries and app restarts.
+        val sampledTracks = deterministicTrackSample(
+            cachedTracks.sortedBy { it.ratingKey },
+            maxItems = 200
+        )
 
         // Build list for the model prompt
         val tracksText = sampledTracks.joinToString("\n") { 
@@ -397,7 +414,7 @@ class MusicRepository(private val context: Context) {
         try {
             val response = GeminiClient.service.generateContent(geminiApiKey, request)
             val jsonText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
-            Log.d("MusicRepository", "Gemini response: $jsonText")
+            Log.d("MusicRepository", "Gemini response received")
 
             // Parse response: extract ratingKeys
             val ratingKeys = parseRatingKeysFromJson(jsonText)

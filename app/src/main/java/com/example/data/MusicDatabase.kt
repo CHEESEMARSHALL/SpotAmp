@@ -2,6 +2,8 @@ package com.example.data
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "cached_tracks")
@@ -238,6 +240,26 @@ abstract class MusicDatabase : RoomDatabase() {
     abstract fun musicDao(): MusicDao
 
     companion object {
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """CREATE TABLE IF NOT EXISTS listening_history (
+                        ratingKey TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL,
+                        playCount INTEGER NOT NULL DEFAULT 0,
+                        completedCount INTEGER NOT NULL DEFAULT 0,
+                        skipCount INTEGER NOT NULL DEFAULT 0,
+                        lastPlayedAt INTEGER,
+                        lastCompletedAt INTEGER,
+                        lastSkippedAt INTEGER,
+                        PRIMARY KEY(ratingKey)
+                    )""".trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: MusicDatabase? = null
 
@@ -248,7 +270,8 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     "music_database"
                 )
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_6_7)
+                .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5)
                 .build()
                 INSTANCE = instance
                 instance

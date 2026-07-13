@@ -29,6 +29,7 @@ import coil.request.ImageRequest
 import com.example.data.DownloadedTrackEntity
 import com.example.data.toTrackItem
 import java.text.DecimalFormat
+import android.os.StatFs
 
 @Composable
 fun DownloadsScreen(
@@ -41,6 +42,7 @@ fun DownloadsScreen(
     val context = LocalContext.current
     val completedTracks = downloadedTracks.filter { it.status == "completed" && !it.localPath.isNullOrBlank() }
     val pendingTracks = downloadedTracks.filter { it.status != "completed" }
+    var offlineOnly by remember { mutableStateOf(viewModel.repository.settings.offlineOnly) }
 
     val baseUrl = viewModel.repository.settings.baseUrl
     val token = viewModel.repository.settings.token
@@ -78,6 +80,20 @@ fun DownloadsScreen(
             ),
             modifier = Modifier.padding(bottom = 16.dp)
         )
+
+        val storage = StatFs(context.filesDir.absolutePath)
+        val availableMb = (storage.availableBytes / (1024.0 * 1024.0))
+        Text(
+            text = "${sizeFormat.format(availableMb)} MB available on device • ${sizeFormat.format(context.cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() } / (1024.0 * 1024.0))} MB cache",
+            style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = 0.45f)),
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Offline-only mode", color = Color.White.copy(alpha = 0.7f), modifier = Modifier.weight(1f))
+            Switch(checked = offlineOnly, onCheckedChange = { offlineOnly = it; viewModel.repository.settings.offlineOnly = it })
+            TextButton(onClick = { context.cacheDir.deleteRecursively() }) { Text("Clear cache") }
+        }
 
         if (downloadedTracks.isNotEmpty()) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -389,7 +405,7 @@ fun DownloadedAlbumRow(
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
     val firstTrack = tracks.firstOrNull()
-    val imageUrl = if (!firstTrack?.thumb.isNullOrEmpty()) "$normalizedBaseUrl${firstTrack?.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (!firstTrack?.thumb.isNullOrEmpty()) "$normalizedBaseUrl${firstTrack?.thumb}" else null
     val totalSizeMb = tracks.sumOf { it.fileSize } / (1024.0 * 1024.0)
     val sizeFormat = DecimalFormat("#.##")
 
@@ -415,6 +431,7 @@ fun DownloadedAlbumRow(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = albumName,
@@ -573,7 +590,7 @@ fun DownloadedPlaylistRow(
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
     val firstTrack = offlineTracks.firstOrNull()
-    val imageUrl = if (!firstTrack?.thumb.isNullOrEmpty()) "$normalizedBaseUrl${firstTrack?.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (!firstTrack?.thumb.isNullOrEmpty()) "$normalizedBaseUrl${firstTrack?.thumb}" else null
     val totalSizeMb = offlineTracks.sumOf { t ->
         downloadedTracks.find { it.ratingKey == t.ratingKey }?.fileSize ?: 0L
     } / (1024.0 * 1024.0)
@@ -601,6 +618,7 @@ fun DownloadedPlaylistRow(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = playlist.name,
@@ -759,7 +777,7 @@ fun DownloadedTrackRow(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (track.thumb.isNotEmpty()) "$normalizedBaseUrl${track.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (track.thumb.isNotEmpty()) "$normalizedBaseUrl${track.thumb}" else null
     val sizeMb = track.fileSize / (1024.0 * 1024.0)
     val sizeFormat = DecimalFormat("#.##")
 
@@ -792,6 +810,7 @@ fun DownloadedTrackRow(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageUrl)
+                        .addHeader("X-Plex-Token", token)
                         .crossfade(true)
                         .build(),
                     contentDescription = track.title,

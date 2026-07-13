@@ -28,6 +28,9 @@ class PlexSettingsManager(context: Context) {
         private const val KEY_NORMALIZATION = "normalization_enabled"
         
         private const val KEY_AI_PROVIDER = "ai_provider"
+        private const val KEY_OFFLINE_ONLY = "offline_only"
+        private const val KEY_AI_MODEL_PATH = "ai_model_path"
+        private const val KEY_AI_TIMEOUT = "ai_timeout_ms"
     }
 
     init {
@@ -87,6 +90,18 @@ class PlexSettingsManager(context: Context) {
     var aiProvider: String
         get() = prefs.getString(KEY_AI_PROVIDER, "CloudAIProvider") ?: "CloudAIProvider"
         set(value) = prefs.edit().putString(KEY_AI_PROVIDER, value).apply()
+
+    var offlineOnly: Boolean
+        get() = prefs.getBoolean(KEY_OFFLINE_ONLY, false)
+        set(value) = prefs.edit().putBoolean(KEY_OFFLINE_ONLY, value).apply()
+
+    var aiModelPath: String
+        get() = prefs.getString(KEY_AI_MODEL_PATH, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_AI_MODEL_PATH, value).apply()
+
+    var aiTimeoutMs: Long
+        get() = prefs.getLong(KEY_AI_TIMEOUT, 15_000L)
+        set(value) = prefs.edit().putLong(KEY_AI_TIMEOUT, value).apply()
 
     var baseUrl: String
         get() {

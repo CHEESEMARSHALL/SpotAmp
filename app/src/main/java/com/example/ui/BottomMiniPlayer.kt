@@ -18,6 +18,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,8 +50,8 @@ fun BottomMiniPlayer(
 
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = currentTrack?.let { 
-        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}?X-Plex-Token=$token" else null 
+    val imageUrl = currentTrack?.let {
+        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
     }
 
     Card(
@@ -92,8 +96,9 @@ fun BottomMiniPlayer(
                 ) {
                     if (imageUrl != null) {
                         AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(imageUrl)
+                    model = ImageRequest.Builder(context)
+                        .data(imageUrl)
+                        .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = currentTrack?.title,
@@ -150,7 +155,12 @@ fun BottomMiniPlayer(
                 // Controls: Quick play/pause or buffer spinner
                 IconButton(
                     onClick = { playbackManager.togglePlayPause() },
-                    modifier = Modifier.testTag("mini_player_play_pause")
+                    modifier = Modifier
+                        .testTag("mini_player_play_pause")
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = if (isPlaying) "Pause" else "Play"
+                        }
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(

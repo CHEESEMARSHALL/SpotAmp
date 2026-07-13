@@ -9,6 +9,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import com.example.data.MusicDao
 import com.example.data.PlexSettingsManager
 import com.example.data.RecentTrack
@@ -34,11 +37,13 @@ data class TrackItem(
     val key: String, // e.g. "/library/parts/123/..."
     val thumb: String, // e.g. "/library/metadata/456/thumb/..."
     val duration: Long,
-    val localPath: String? = null
+    val localPath: String? = null,
+    val genres: List<String> = emptyList()
 )
 
 class PlaybackManager private constructor(private val appContext: Context) {
     private var exoPlayer: ExoPlayer? = null
+    private var httpDataSourceFactory: DefaultHttpDataSource.Factory? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _currentTrack = MutableStateFlow<TrackItem?>(null)
@@ -110,6 +115,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
     fun setCredentials(baseUrl: String, token: String) {
         this.baseUrl = baseUrl
         this.token = token
+        httpDataSourceFactory?.setDefaultRequestProperties(mapOf("X-Plex-Token" to token))
     }
 
     fun setMusicDao(dao: MusicDao) {
@@ -119,19 +125,13 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     private suspend fun restorePlaybackState() {
         val state = musicDao?.getPlaybackState() ?: return
-        try {
-            val restoredQueue = Json.decodeFromString<List<TrackItem>>(state.queueJson)
-                .filter { it.localPath == null || File(it.localPath).isFile }
-            if (restoredQueue.isEmpty()) return
-            _queue.value = restoredQueue
-            _currentIndex.value = state.currentIndex.coerceIn(0, restoredQueue.lastIndex)
-            _currentTrack.value = restoredQueue[_currentIndex.value]
-            _progress.value = state.positionMs.coerceAtLeast(0L)
-            _shuffleModeEnabled.value = state.shuffleEnabled
-            _repeatMode.value = state.repeatMode
-        } catch (_: Exception) {
-            // Corrupt state should never prevent a fresh playback session.
-        }
+        val restored = PlaybackStateRestoration.restore(state) ?: return
+        _queue.value = restored.queue
+        _currentIndex.value = restored.currentIndex
+        _currentTrack.value = restored.queue[restored.currentIndex]
+        _progress.value = restored.positionMs
+        _shuffleModeEnabled.value = restored.shuffleEnabled
+        _repeatMode.value = restored.repeatMode
     }
 
     private fun persistPlaybackState() {
@@ -140,7 +140,6 @@ class PlaybackManager private constructor(private val appContext: Context) {
         lastPersistAt = now
         coroutineScope.launch {
             val dao = musicDao ?: return@launch
-            if (_queue.value.isEmpty()) return@launch
             dao.savePlaybackState(
                 PlaybackStateEntity(
                     queueJson = Json.encodeToString(_queue.value),
@@ -156,8 +155,21 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private fun initializePlayer() {
         if (exoPlayer != null) return
 
-        exoPlayer = ExoPlayer.Builder(appContext).build().apply {
+        val httpFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(mapOf("X-Plex-Token" to token))
+        httpDataSourceFactory = httpFactory
+        exoPlayer = ExoPlayer.Builder(appContext)
+            // Route local file:// downloads through FileDataSource and remote Plex media
+            // through the authenticated HTTP factory.
+            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(appContext, httpFactory)))
+            .build().apply {
             addListener(object : Player.Listener {
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    // Keep diagnostics actionable without logging authenticated URLs or tokens.
+                    android.util.Log.e("PlaybackManager", "Playback failed: ${error.errorCodeName} (${error.message ?: "no message"})")
+                    _isPlaying.value = false
+                    _isLoading.value = false
+                }
+
                 override fun onIsPlayingChanged(playing: Boolean) {
                     _isPlaying.value = playing
                     if (playing) {
@@ -303,7 +315,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private fun mediaUri(track: TrackItem, normalizedBaseUrl: String = baseUrl.trimEnd('/')): String {
         val local = track.localPath?.let(::File)
         if (local?.isFile == true) return local.toURI().toString()
-        return "$normalizedBaseUrl${track.key}?X-Plex-Token=$token"
+        return "$normalizedBaseUrl${track.key}"
     }
 
     fun playTrack(track: TrackItem, queueList: List<TrackItem>) {
@@ -430,6 +442,33 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 exoPlayer?.playWhenReady = true
             }
         }
+    }
+
+    fun removeFromQueue(index: Int) {
+        if (index !in _queue.value.indices) return
+        val updated = _queue.value.toMutableList().apply { removeAt(index) }
+        _queue.value = updated
+        mainHandler.post { exoPlayer?.removeMediaItem(index) }
+        if (updated.isEmpty()) {
+            _currentIndex.value = -1
+            _currentTrack.value = null
+        } else if (_currentIndex.value >= updated.size) {
+            _currentIndex.value = updated.lastIndex
+            _currentTrack.value = updated.last()
+        }
+        persistPlaybackState()
+    }
+
+    fun clearQueue() {
+        mainHandler.post {
+            exoPlayer?.stop()
+            exoPlayer?.clearMediaItems()
+        }
+        _queue.value = emptyList()
+        _currentIndex.value = -1
+        _currentTrack.value = null
+        _progress.value = 0L
+        persistPlaybackState()
     }
 
     fun play() {

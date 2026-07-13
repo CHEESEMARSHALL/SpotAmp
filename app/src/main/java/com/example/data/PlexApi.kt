@@ -25,6 +25,11 @@ data class PlexDirectory(
     @Json(name = "type") val type: String
 )
 
+fun List<PlexDirectory>.musicLibraries(): List<PlexDirectory> = filter {
+    it.type.equals("artist", ignoreCase = true) ||
+        it.type.equals("music", ignoreCase = true)
+}
+
 @JsonClass(generateAdapter = true)
 data class PlexMetadataContainer(
     @Json(name = "Metadata") val metadata: List<PlexMetadata>? = null

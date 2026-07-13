@@ -32,6 +32,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.PlexMetadata
+import com.example.data.RadioRequest
+import com.example.data.RadioType
 
 enum class AlbumCategory {
     ALBUMS, SINGLES_EPS, LIVE_ALBUMS, COMPILATIONS
@@ -39,17 +41,6 @@ enum class AlbumCategory {
 
 fun categorizeAlbum(album: PlexMetadata, artistName: String): AlbumCategory {
     val title = album.title.lowercase()
-    val isBmth = artistName.contains("Bring Me the Horizon", ignoreCase = true)
-    
-    if (isBmth) {
-        return when {
-            title.contains("spotify singles") || title.contains("teardrops") -> AlbumCategory.SINGLES_EPS
-            title.contains("royal albert hall") -> AlbumCategory.LIVE_ALBUMS
-            title.contains("2004-2013") -> AlbumCategory.COMPILATIONS
-            else -> AlbumCategory.ALBUMS
-        }
-    }
-    
     return when {
         title.contains("live") || title.contains("royal albert hall") || title.contains("concert") -> AlbumCategory.LIVE_ALBUMS
         title.contains("single") || title.contains(" ep") || title.contains("ep ") || title.contains("(ep)") -> AlbumCategory.SINGLES_EPS
@@ -91,7 +82,7 @@ fun ArtistDetailScreen(
         artistsList.find { it.ratingKey == artistId }
     }
     val artistThumb = currentArtistMetadata?.thumb ?: artistFromList?.thumb
-    val imageUrl = if (!artistThumb.isNullOrEmpty()) "$normalizedBaseUrl$artistThumb?X-Plex-Token=$token" else null
+    val imageUrl = if (!artistThumb.isNullOrEmpty()) "$normalizedBaseUrl$artistThumb" else null
 
     // Categorized lists
     val albumsList = remember(albums) {
@@ -108,29 +99,12 @@ fun ArtistDetailScreen(
     }
 
     // Popular tracks
-    val popularTracks = remember(currentArtistTracks, artistName) {
-        val bmthTitles = listOf("Can You Feel My Heart", "Throne", "Sleepwalking", "Shadow Moses", "Drown")
-        val isBmth = artistName.contains("Bring Me the Horizon", ignoreCase = true)
-        
-        if (isBmth && currentArtistTracks.isNotEmpty()) {
-            val matched = mutableListOf<PlexMetadata>()
-            bmthTitles.forEach { title ->
-                val track = currentArtistTracks.find { it.title.contains(title, ignoreCase = true) }
-                if (track != null) {
-                    matched.add(track)
-                }
-            }
-            if (matched.size < 5) {
-                currentArtistTracks.forEach { track ->
-                    if (matched.size < 5 && !matched.contains(track)) {
-                        matched.add(track)
-                    }
-                }
-            }
-            matched
-        } else {
-            currentArtistTracks.take(5)
-        }
+    val popularTracks = remember(currentArtistTracks) {
+        currentArtistTracks
+            .sortedWith(compareByDescending<PlexMetadata> { it.viewCount ?: 0 }
+                .thenBy { it.index ?: Int.MAX_VALUE }
+                .thenBy { it.ratingKey })
+            .take(5)
     }
 
     LazyColumn(
@@ -175,15 +149,16 @@ fun ArtistDetailScreen(
                 )
 
                 IconButton(
-                    onClick = { /* casting overlay */ },
+                    onClick = { /* Casting support is not implemented yet. */ },
+                    enabled = false,
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color.White.copy(alpha = 0.05f))
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Cast,
-                        contentDescription = "Cast",
-                        tint = Color.White
+                        contentDescription = "Casting unavailable",
+                        tint = Color.White.copy(alpha = 0.35f)
                     )
                 }
             }
@@ -209,6 +184,7 @@ fun ArtistDetailScreen(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = artistName,
@@ -266,7 +242,14 @@ fun ArtistDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         IconButton(
-                            onClick = { /* Broadcast radio */ },
+                            onClick = {
+                                viewModel.playSeededRadio(
+                                    RadioRequest(
+                                        type = RadioType.ARTIST_RADIO,
+                                        seedArtist = artistName
+                                    )
+                                )
+                            },
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
@@ -645,17 +628,6 @@ fun ArtistDetailScreen(
                             )
                         }
                         
-                        IconButton(
-                            onClick = { /* menu placeholder */ },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "Options",
-                                tint = Color.White.copy(alpha = 0.4f),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
                     }
                 }
             }
@@ -689,10 +661,17 @@ fun ArtistDetailScreen(
                 }
 
                 itemsIndexed(stylesList) { _, styleName ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { /* filter styles */ }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                            .clickable {
+                                viewModel.playSeededRadio(
+                                    RadioRequest(
+                                        type = RadioType.STYLE_RADIO,
+                                        genre = styleName
+                                    )
+                                )
+                            }
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -724,7 +703,14 @@ fun ArtistDetailScreen(
                         )
                         
                         IconButton(
-                            onClick = { /* Options menu */ },
+                            onClick = {
+                                viewModel.playSeededRadio(
+                                    RadioRequest(
+                                        type = RadioType.STYLE_RADIO,
+                                        genre = styleName
+                                    )
+                                )
+                            },
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
@@ -831,7 +817,7 @@ fun ArtistAlbumListItem(
     modifier: Modifier = Modifier
 ) {
     val albumThumb = album.thumb
-    val imageUrl = if (!albumThumb.isNullOrEmpty()) "$normalizedBaseUrl$albumThumb?X-Plex-Token=$token" else null
+    val imageUrl = if (!albumThumb.isNullOrEmpty()) "$normalizedBaseUrl$albumThumb" else null
     val stars = if (album.title.contains("POST HUMAN: NeX GEn", ignoreCase = true)) " ★★★★★" else ""
 
     Row(
@@ -849,6 +835,7 @@ fun ArtistAlbumListItem(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageUrl)
+                        .addHeader("X-Plex-Token", token)
                         .crossfade(true)
                         .build(),
                     contentDescription = album.title,
@@ -947,7 +934,7 @@ fun AlbumDetailScreen(
     // Find first track's thumbnail as album art, or use album's own
     val firstTrackThumb = tracks.firstOrNull()?.thumb
     val thumbPath = if (!firstTrackThumb.isNullOrEmpty()) firstTrackThumb else null
-    val imageUrl = if (thumbPath != null) "$normalizedBaseUrl$thumbPath?X-Plex-Token=$token" else null
+    val imageUrl = if (thumbPath != null) "$normalizedBaseUrl$thumbPath" else null
 
     Column(
         modifier = modifier
@@ -1018,6 +1005,7 @@ fun AlbumDetailScreen(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = null,
@@ -1063,7 +1051,8 @@ fun AlbumDetailScreen(
                             if (imageUrl != null) {
                                 AsyncImage(
                                     model = ImageRequest.Builder(context)
-                                        .data(imageUrl)
+                                    .data(imageUrl)
+                                    .addHeader("X-Plex-Token", token)
                                         .crossfade(true)
                                         .build(),
                                     contentDescription = albumName,
@@ -1169,6 +1158,28 @@ fun AlbumDetailScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Shuffle", fontWeight = FontWeight.Bold)
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.playSeededRadio(
+                                RadioRequest(
+                                    type = RadioType.ALBUM_RADIO,
+                                    seedAlbum = albumName
+                                )
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .height(44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = ButtonDefaults.outlinedButtonBorder.copy()
+                    ) {
+                        Icon(imageVector = Icons.Rounded.RssFeed, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Album Radio", fontWeight = FontWeight.Bold)
                     }
                 }
             }

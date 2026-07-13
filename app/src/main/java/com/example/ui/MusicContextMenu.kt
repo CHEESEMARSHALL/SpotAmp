@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.PlaylistEntity
+import com.example.data.RadioRequest
+import com.example.data.RadioType
 import com.example.playback.TrackItem
 import kotlinx.coroutines.launch
 
@@ -88,7 +90,7 @@ fun MusicContextMenu(
         is ContextMenuItem.Album -> item.thumb
         is ContextMenuItem.Artist -> item.thumb
     }
-    val imageUrl = if (thumb.isNotEmpty()) "$normalizedBaseUrl$thumb?X-Plex-Token=$token" else null
+    val imageUrl = if (thumb.isNotEmpty()) "$normalizedBaseUrl$thumb" else null
 
     val title = when (item) {
         is ContextMenuItem.Track -> item.title
@@ -129,6 +131,7 @@ fun MusicContextMenu(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = title,
@@ -277,49 +280,22 @@ fun MusicContextMenu(
                         icon = Icons.Rounded.Radio,
                         label = label
                     ) {
-                        coroutineScope.launch {
-                            // Fetch standard tracks, shuffle or find same genre / same artist to form radio
-                            val cachedList = viewModel.repository.getCachedCount()
-                            if (cachedList > 0) {
-                                val libraryTracks = viewModel.repository.getCachedCount()
-                                // Just generate custom mix centered around current context using Gemini or local smart logic
-                                val prompt = when (item) {
-                                    is ContextMenuItem.Track -> "Smooth similar vibes to '${item.title}' by ${item.artist}"
-                                    is ContextMenuItem.Album -> "Cohesive radio mix inspired by the album '${item.title}'"
-                                    is ContextMenuItem.Artist -> "Diverse mix featuring and inspired by ${item.name}"
-                                }
-                                viewModel.generateAiPlaylist(prompt)
-                            } else {
-                                // Fallback: play artist/album items shuffled
-                                val allTracks = when (item) {
-                                    is ContextMenuItem.Track -> listOf(item.toTrackItem())
-                                    is ContextMenuItem.Album -> {
-                                        val tracks = viewModel.repository.getAlbumTracks(item.ratingKey)
-                                        tracks.mapNotNull { t ->
-                                            val key = t.media?.firstOrNull()?.part?.firstOrNull()?.key ?: return@mapNotNull null
-                                            TrackItem(t.ratingKey, t.title, t.grandparentTitle ?: t.parentTitle ?: "Unknown", t.parentTitle ?: "Unknown", key, t.thumb ?: "", t.duration ?: 0L)
-                                        }
-                                    }
-                                    is ContextMenuItem.Artist -> {
-                                        val albums = viewModel.repository.getArtistAlbums(item.ratingKey)
-                                        val list = mutableListOf<TrackItem>()
-                                        albums.forEach { album ->
-                                            val tracks = viewModel.repository.getAlbumTracks(album.ratingKey)
-                                            tracks.forEach { t ->
-                                                t.media?.firstOrNull()?.part?.firstOrNull()?.key?.let { key ->
-                                                    list.add(TrackItem(t.ratingKey, t.title, t.grandparentTitle ?: t.parentTitle ?: "Unknown", t.parentTitle ?: "Unknown", key, t.thumb ?: "", t.duration ?: 0L))
-                                                }
-                                            }
-                                        }
-                                        list
-                                    }
-                                }
-                                if (allTracks.isNotEmpty()) {
-                                    viewModel.playbackManager.playQueue(allTracks.shuffled(), 0)
-                                }
-                            }
-                            onDismiss()
+                        val request = when (item) {
+                            is ContextMenuItem.Track -> RadioRequest(
+                                type = RadioType.ARTIST_RADIO,
+                                seedArtist = item.artist
+                            )
+                            is ContextMenuItem.Album -> RadioRequest(
+                                type = RadioType.ALBUM_RADIO,
+                                seedAlbum = item.title
+                            )
+                            is ContextMenuItem.Artist -> RadioRequest(
+                                type = RadioType.ARTIST_RADIO,
+                                seedArtist = item.name
+                            )
                         }
+                        viewModel.playSeededRadio(request)
+                        onDismiss()
                     }
                 }
 
@@ -464,7 +440,7 @@ fun MusicContextMenu(
                     }
                 }
 
-                // 9. Build album/song/artist mix (using Gemini!)
+                // 9. Build album/song/artist mix through the selected provider
                 item {
                     val label = when (item) {
                         is ContextMenuItem.Track -> "Build song mix"

@@ -32,6 +32,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
+import com.example.data.LocalDjBlurbService
 
 @Composable
 fun NowPlayingScreen(
@@ -59,8 +60,8 @@ fun NowPlayingScreen(
 
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = currentTrack?.let { 
-        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}?X-Plex-Token=$token" else null 
+    val imageUrl = currentTrack?.let {
+        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
     }
 
     Box(
@@ -73,6 +74,7 @@ fun NowPlayingScreen(
             AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(imageUrl)
+                    .addHeader("X-Plex-Token", token)
                     .crossfade(true)
                     .build(),
                 contentDescription = null,
@@ -171,8 +173,9 @@ fun NowPlayingScreen(
                     ) {
                         if (imageUrl != null) {
                             AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(imageUrl)
+                                    model = ImageRequest.Builder(context)
+                                        .data(imageUrl)
+                                        .addHeader("X-Plex-Token", token)
                                     .crossfade(true)
                                     .build(),
                                 contentDescription = currentTrack?.title ?: "Album Cover",
@@ -251,6 +254,28 @@ fun NowPlayingScreen(
                                         onNavigateToAlbum(track.ratingKey, track.album)
                                     }
                                 )
+
+                                Text(
+                                    text = "Local DJ • ${LocalDjBlurbService().describe(track, currentIndex, queue.size)}",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = Color.White.copy(alpha = 0.48f),
+                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 6.dp)
+                                )
+                                if (track.genres.isNotEmpty()) {
+                                    Text(
+                                        text = "Plex style • ${track.genres.joinToString(" • ")}",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color(0xFF67E8F9)
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(top = 4.dp)
+                                    )
+                                }
                             } ?: run {
                                 Text(
                                     text = "Unknown Artist",
@@ -299,14 +324,15 @@ fun NowPlayingScreen(
                         .fillMaxWidth()
                         .padding(vertical = 16.dp)
                 ) {
-                    Text(
-                        text = "Play Queue (${queue.size} songs)",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        ),
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
+                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Play Queue (${queue.size} songs)",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = Color.White)
+                        )
+                        if (queue.isNotEmpty()) {
+                            TextButton(onClick = { playbackManager.clearQueue() }) { Text("Clear queue", color = Color(0xFFFCA5A5)) }
+                        }
+                    }
 
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -327,7 +353,7 @@ fun NowPlayingScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 val trackImgUrl = if (track.thumb.isNotEmpty()) {
-                                    "$normalizedBaseUrl${track.thumb}?X-Plex-Token=$token"
+                                    "$normalizedBaseUrl${track.thumb}"
                                 } else null
 
                                 Card(
@@ -338,6 +364,7 @@ fun NowPlayingScreen(
                                         AsyncImage(
                                             model = ImageRequest.Builder(context)
                                                 .data(trackImgUrl)
+                                                .addHeader("X-Plex-Token", token)
                                                 .crossfade(true)
                                                 .build(),
                                             contentDescription = null,

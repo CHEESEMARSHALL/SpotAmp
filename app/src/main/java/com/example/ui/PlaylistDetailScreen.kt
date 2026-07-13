@@ -51,7 +51,7 @@ fun PlaylistDetailScreen(
     // Find first track's thumbnail as playlist art, or use fallback gradient
     val firstTrackThumb = tracks.firstOrNull()?.thumb
     val thumbPath = if (!firstTrackThumb.isNullOrEmpty()) firstTrackThumb else null
-    val imageUrl = if (thumbPath != null) "$normalizedBaseUrl$thumbPath?X-Plex-Token=$token" else null
+    val imageUrl = if (thumbPath != null) "$normalizedBaseUrl$thumbPath" else null
 
     Column(
         modifier = modifier
@@ -93,6 +93,7 @@ fun PlaylistDetailScreen(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = null,
@@ -139,6 +140,7 @@ fun PlaylistDetailScreen(
                                 AsyncImage(
                                     model = ImageRequest.Builder(context)
                                         .data(imageUrl)
+                                        .addHeader("X-Plex-Token", token)
                                         .crossfade(true)
                                         .build(),
                                     contentDescription = playlistName,

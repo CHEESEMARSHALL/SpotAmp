@@ -7,6 +7,8 @@ import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import android.os.IBinder
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import coil.Coil
 import coil.request.ImageRequest
 import kotlinx.coroutines.*
@@ -16,6 +18,7 @@ class MusicPlaybackService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private lateinit var playbackManager: PlaybackManager
+    private lateinit var mediaSession: MediaSession
     private var isServiceRunning = false
 
     companion object {
@@ -34,8 +37,19 @@ class MusicPlaybackService : Service() {
         super.onCreate()
         playbackManager = PlaybackManager.getInstance(this)
         createNotificationChannel()
+        mediaSession = MediaSession(this, "SpotAmpPlayback").apply {
+            setCallback(object : MediaSession.Callback() {
+                override fun onPlay() = playbackManager.play()
+                override fun onPause() = playbackManager.pause()
+                override fun onSkipToNext() = playbackManager.next()
+                override fun onSkipToPrevious() = playbackManager.prev()
+                override fun onStop() = playbackManager.pause()
+            })
+            isActive = true
+        }
         observePlaybackState()
     }
+
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.action?.let { action ->
@@ -115,7 +129,7 @@ class MusicPlaybackService : Service() {
 
         if (track.thumb.isNotEmpty() && baseUrlVal.isNotEmpty() && tokenVal.isNotEmpty()) {
             val normalizedBaseUrl = if (baseUrlVal.endsWith("/")) baseUrlVal.dropLast(1) else baseUrlVal
-            val imageUrl = "$normalizedBaseUrl${track.thumb}?X-Plex-Token=$tokenVal"
+            val imageUrl = "$normalizedBaseUrl${track.thumb}"
 
             if (imageUrl == lastLoadedThumbUrl && lastLoadedBitmap != null) {
                 largeIcon = lastLoadedBitmap
@@ -124,6 +138,7 @@ class MusicPlaybackService : Service() {
                     val imageLoader = Coil.imageLoader(this)
                     val request = ImageRequest.Builder(this)
                         .data(imageUrl)
+                        .addHeader("X-Plex-Token", tokenVal)
                         .allowHardware(false) // Safe for Notification large icons
                         .build()
                     val result = withContext(Dispatchers.IO) {
@@ -221,6 +236,23 @@ class MusicPlaybackService : Service() {
             notificationBuilder.setLargeIcon(largeIcon)
         }
 
+        val actions = PlaybackState.ACTION_PLAY or
+            PlaybackState.ACTION_PAUSE or
+            PlaybackState.ACTION_SKIP_TO_NEXT or
+            PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+            PlaybackState.ACTION_STOP
+        mediaSession.setPlaybackState(
+            PlaybackState.Builder()
+                .setActions(actions)
+                .setState(
+                    if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                    playbackManager.progress.value,
+                    1f
+                )
+                .setActiveQueueItemId(track.ratingKey.toLongOrNull() ?: 0L)
+                .build()
+        )
+
         if (prevAction != null) notificationBuilder.addAction(prevAction)
         if (playPauseAction != null) notificationBuilder.addAction(playPauseAction)
         if (nextAction != null) notificationBuilder.addAction(nextAction)
@@ -229,6 +261,7 @@ class MusicPlaybackService : Service() {
         // Set MediaStyle
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             val mediaStyle = Notification.MediaStyle()
+                .setMediaSession(mediaSession.sessionToken)
                 .setShowActionsInCompactView(0, 1, 2)
             notificationBuilder.setStyle(mediaStyle)
         }
@@ -270,6 +303,8 @@ class MusicPlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        mediaSession.isActive = false
+        mediaSession.release()
         super.onDestroy()
         isServiceRunning = false
         serviceScope.cancel()

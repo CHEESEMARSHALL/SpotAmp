@@ -44,8 +44,21 @@ fun LibraryScreen(
     val albums by viewModel.albums.collectAsStateWithLifecycle()
     val selectedSectionId by viewModel.selectedSectionId.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
+    val downloadedAlbums = remember(downloadedTracks) {
+        downloadedTracks.filter { it.status == "completed" && !it.localPath.isNullOrBlank() }
+            .map { it.album.lowercase() }
+            .toSet()
+    }
+    val downloadedArtists = remember(downloadedTracks) {
+        downloadedTracks
+            .filter { it.status == "completed" && !it.localPath.isNullOrBlank() }
+            .map { it.artist.lowercase() }
+            .toSet()
+    }
 
     var selectedTab by remember { mutableIntStateOf(0) }
+    var offlineOnly by remember { mutableStateOf(viewModel.repository.settings.offlineOnly) }
     val tabs = listOf("Artists", "Albums", "Playlists")
 
     var activeContextMenu by remember { mutableStateOf<ContextMenuItem?>(null) }
@@ -118,6 +131,29 @@ fun LibraryScreen(
             }
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = if (offlineOnly) "Showing downloaded ${tabs[selectedTab].lowercase()}" else "Showing Plex ${tabs[selectedTab].lowercase()}",
+                color = Color.White.copy(alpha = 0.55f),
+                style = MaterialTheme.typography.bodySmall
+            )
+            FilterChip(
+                selected = offlineOnly,
+                onClick = {
+                    offlineOnly = !offlineOnly
+                    viewModel.repository.settings.offlineOnly = offlineOnly
+                },
+                label = { Text("Offline only") },
+                leadingIcon = if (offlineOnly) {
+                    { Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                } else null
+            )
+        }
+
         if (isLoading && artists.isEmpty() && albums.isEmpty()) {
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -129,7 +165,8 @@ fun LibraryScreen(
             Box(modifier = Modifier.weight(1f)) {
                 when (selectedTab) {
                     0 -> { // Artists Grid
-                        if (artists.isEmpty()) {
+                        val visibleArtists = if (offlineOnly) artists.filter { it.title.lowercase() in downloadedArtists } else artists
+                        if (visibleArtists.isEmpty()) {
                             EmptyLibraryState("No artists found in this library.")
                         } else {
                             LazyVerticalGrid(
@@ -138,11 +175,12 @@ fun LibraryScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(artists) { artist ->
+                                items(visibleArtists) { artist ->
                                     ArtistGridItem(
                                         artist = artist, 
                                         baseUrl = viewModel.repository.settings.baseUrl, 
                                         token = viewModel.repository.settings.token,
+                                        isDownloaded = artist.title.lowercase() in downloadedArtists,
                                         onMoreClick = {
                                             activeContextMenu = ContextMenuItem.Artist(
                                                 ratingKey = artist.ratingKey,
@@ -158,7 +196,8 @@ fun LibraryScreen(
                         }
                     }
                     1 -> { // Albums Grid
-                        if (albums.isEmpty()) {
+                        val visibleAlbums = if (offlineOnly) albums.filter { it.title.lowercase() in downloadedAlbums } else albums
+                        if (visibleAlbums.isEmpty()) {
                             EmptyLibraryState("No albums found in this library.")
                         } else {
                             LazyVerticalGrid(
@@ -167,11 +206,12 @@ fun LibraryScreen(
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                                 modifier = Modifier.fillMaxSize()
                             ) {
-                                items(albums) { album ->
+                                items(visibleAlbums) { album ->
                                     AlbumGridItem(
                                         album = album, 
                                         baseUrl = viewModel.repository.settings.baseUrl, 
                                         token = viewModel.repository.settings.token,
+                                        isDownloaded = album.title.lowercase() in downloadedAlbums,
                                         onMoreClick = {
                                             activeContextMenu = ContextMenuItem.Album(
                                                 ratingKey = album.ratingKey,
@@ -187,7 +227,7 @@ fun LibraryScreen(
                             }
                         }
                     }
-                    2 -> { // Playlists Dashboard (Gemini framework + lists)
+                    2 -> { // Playlists Dashboard (controlled AI/local intent + lists)
                         val playlists by viewModel.playlists.collectAsStateWithLifecycle()
                         val aiLoading by viewModel.aiLoading.collectAsStateWithLifecycle()
                         val aiError by viewModel.aiError.collectAsStateWithLifecycle()
@@ -200,7 +240,7 @@ fun LibraryScreen(
                             modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            // Gemini AI Playlist Generator Framework Section
+                            // Smart playlist generator; the selected provider owns interpretation.
                             item {
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
@@ -215,13 +255,13 @@ fun LibraryScreen(
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Rounded.AutoAwesome,
-                                                contentDescription = "Gemini",
+                                                contentDescription = "Smart playlist assistant",
                                                 tint = Color(0xFF818CF8),
                                                 modifier = Modifier.size(24.dp)
                                             )
                                             Spacer(modifier = Modifier.width(12.dp))
                                             Text(
-                                                text = "Gemini AI Playlist Generator",
+                                                text = "Smart Playlist Generator",
                                                 style = MaterialTheme.typography.titleMedium.copy(
                                                     fontWeight = FontWeight.Bold,
                                                     color = Color.White
@@ -230,7 +270,7 @@ fun LibraryScreen(
                                         }
 
                                         Text(
-                                            text = "Describe the vibe, genre, or mood, and Gemini will synthesize a smart playlist from your catalog sample.",
+                                            text = "Describe a vibe, genre, or mood. The selected provider will interpret it, then the local library engine chooses matching Plex tracks.",
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 color = Color.White.copy(alpha = 0.6f)
                                             ),
@@ -272,7 +312,7 @@ fun LibraryScreen(
                                                 )
                                                 Spacer(modifier = Modifier.width(12.dp))
                                                 Text(
-                                                    "Gemini is curation-synthesizing tracks...",
+                                                    "Interpreting your request and ranking local Plex tracks...",
                                                     style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = 0.7f))
                                                 )
                                             }
@@ -292,7 +332,7 @@ fun LibraryScreen(
                                                 ),
                                                 enabled = playlistPrompt.isNotBlank()
                                             ) {
-                                                Text("Synthesize AI Playlist", fontWeight = FontWeight.Bold)
+                                                Text("Generate Smart Playlist", fontWeight = FontWeight.Bold)
                                             }
                                         }
 
@@ -345,7 +385,7 @@ fun LibraryScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
-                                            "No playlists created yet. Tap '+' to create one manually or try Gemini!",
+                                            "No playlists created yet. Tap '+' to create one manually or generate a smart playlist.",
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 color = Color.White.copy(alpha = 0.4f),
                                                 textAlign = TextAlign.Center
@@ -478,12 +518,13 @@ fun ArtistGridItem(
     artist: PlexMetadata,
     baseUrl: String,
     token: String,
+    isDownloaded: Boolean = false,
     onMoreClick: () -> Unit,
     onClick: () -> Unit
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (!artist.thumb.isNullOrEmpty()) "$normalizedBaseUrl${artist.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (!artist.thumb.isNullOrEmpty()) "$normalizedBaseUrl${artist.thumb}" else null
 
     Card(
         modifier = Modifier
@@ -514,6 +555,7 @@ fun ArtistGridItem(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = artist.title,
@@ -556,6 +598,22 @@ fun ArtistGridItem(
                         tint = Color.White,
                         modifier = Modifier.size(16.dp)
                     )
+                }
+                if (isDownloaded) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF10B981).copy(alpha = 0.9f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Rounded.CloudDownload, contentDescription = "Downloaded artist", modifier = Modifier.size(13.dp), tint = Color.White)
+                            Text("Local", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        }
+                    }
                 }
             }
 

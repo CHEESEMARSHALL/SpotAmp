@@ -46,8 +46,11 @@ fun HomeScreen(
     val selectedLibraryName by viewModel.selectedLibraryName.collectAsStateWithLifecycle()
     val homeFeedState by viewModel.homeFeedState.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val cachedCount by viewModel.cachedCount.collectAsStateWithLifecycle()
+    val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
 
     var activeContextMenu by remember { mutableStateOf<ContextMenuItem?>(null) }
+    var selectedStation by remember { mutableStateOf<RecommendedStation?>(null) }
     val baseUrl = viewModel.repository.settings.baseUrl
     val token = viewModel.repository.settings.token
 
@@ -76,6 +79,15 @@ fun HomeScreen(
             if (!isConfigured) {
                 item {
                     UnconfiguredBanner(onNavigateToSettings = onNavigateToSettings)
+                }
+            }
+
+            errorMessage?.let { message ->
+                item {
+                    HomeErrorBanner(
+                        message = message,
+                        onNavigateToSettings = onNavigateToSettings
+                    )
                 }
             }
 
@@ -175,9 +187,7 @@ fun HomeScreen(
                     item {
                         RecommendedStationsSection(
                             stations = homeFeedState.stations,
-                            onStationClick = { station ->
-                                viewModel.playStation(station)
-                            }
+                            onStationClick = { station -> selectedStation = station }
                         )
                     }
                 }
@@ -309,7 +319,33 @@ fun HomeScreen(
                         )
                     }
                 }
+
+                if (homeFeedState.recentPlays.isEmpty() &&
+                    homeFeedState.recentlyAdded.isEmpty() &&
+                    homeFeedState.dailyMixes.isEmpty() &&
+                    homeFeedState.history.isEmpty()
+                ) {
+                    item {
+                        HomeEmptyState(
+                            isConfigured = isConfigured,
+                            hasCachedMusic = cachedCount > 0,
+                            onNavigateToSettings = onNavigateToSettings
+                        )
+                    }
+                }
             }
+        }
+
+        selectedStation?.let { station ->
+            StationDetailsDialog(
+                station = station,
+                viewModel = viewModel,
+                onDismiss = { selectedStation = null },
+                onPlay = { request ->
+                    selectedStation = null
+                    viewModel.playStation(station, request)
+                }
+            )
         }
 
         // Context Menu Overlay Sheet
@@ -323,6 +359,240 @@ fun HomeScreen(
             )
         }
     }
+}
+
+@Composable
+private fun HomeEmptyState(
+    isConfigured: Boolean,
+    hasCachedMusic: Boolean,
+    onNavigateToSettings: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = if (hasCachedMusic) Icons.Rounded.CloudOff else Icons.Rounded.LibraryMusic,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.55f),
+                modifier = Modifier.size(42.dp)
+            )
+            Text(
+                text = when {
+                    !isConfigured && hasCachedMusic -> "Offline library ready"
+                    !isConfigured -> "Connect Plex to get started"
+                    else -> "Your library is ready to explore"
+                },
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = when {
+                    !isConfigured && hasCachedMusic -> "No Home shelves are available yet, but your cached music remains searchable offline."
+                    !isConfigured -> "Configure Plex or index music to populate real Home shelves."
+                    else -> "Sync your music library to build real recommendations and history."
+                },
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center
+            )
+            if (!isConfigured) {
+                TextButton(onClick = onNavigateToSettings) {
+                    Text("Open Settings")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeErrorBanner(
+    message: String,
+    onNavigateToSettings: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF7F1D1D).copy(alpha = 0.3f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5).copy(alpha = 0.25f)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(Icons.Rounded.ErrorOutline, contentDescription = "Sync error", tint = Color(0xFFFCA5A5))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Plex sync needs attention", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(message, color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onNavigateToSettings) { Text("Settings") }
+        }
+    }
+}
+
+@Composable
+private fun StationDetailsDialog(
+    station: RecommendedStation,
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit,
+    onPlay: (RadioRequest) -> Unit
+) {
+    val cachedTracks by produceState<List<CachedTrack>?>(null, station.id) {
+        value = runCatching { viewModel.repository.getCachedTracksList() }.getOrDefault(emptyList())
+    }
+    val cachedTrackList = cachedTracks.orEmpty()
+    var trackCount by remember { mutableFloatStateOf(40f) }
+    var discovery by remember { mutableStateOf(DiscoveryLevel.BALANCED) }
+    var cooldown by remember { mutableFloatStateOf(7f) }
+    var selectedGenre by remember(station.id) { mutableStateOf<String?>(null) }
+    var selectedDecade by remember(station.id) { mutableStateOf<Int?>(null) }
+    var selectedCollection by remember(station.id) { mutableStateOf<String?>(null) }
+    var selectedArtist by remember(station.id) { mutableStateOf<String?>(null) }
+    val genres = remember(cachedTracks) {
+        cachedTrackList.flatMap { it.genres.split('|') }.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted().take(12)
+    }
+    val decades = remember(cachedTracks) {
+        cachedTrackList.mapNotNull { it.year }.map { (it / 10) * 10 }.distinct().sortedDescending().take(12)
+    }
+    val collections = remember(cachedTracks) {
+        cachedTrackList.flatMap { it.collections.split('|') }.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted().take(12)
+    }
+    val artists = remember(cachedTracks) {
+        cachedTrackList.map { it.artist }.filter { it.isNotBlank() }.distinct().sorted().take(12)
+    }
+    LaunchedEffect(genres, decades, collections, artists, station.type) {
+        if (selectedGenre == null) selectedGenre = genres.firstOrNull()
+        if (selectedDecade == null) selectedDecade = decades.firstOrNull()
+        if (selectedCollection == null) selectedCollection = collections.firstOrNull()
+        if (selectedArtist == null) selectedArtist = artists.firstOrNull()
+    }
+    val previewRequest = remember(
+        station.type,
+        selectedArtist,
+        selectedGenre,
+        selectedCollection,
+        selectedDecade,
+        trackCount,
+        discovery
+    ) {
+        RadioRequest(
+            type = station.type,
+            seedArtist = selectedArtist,
+            genre = selectedGenre,
+            collection = selectedCollection,
+            decadeStart = selectedDecade,
+            trackCount = trackCount.toInt(),
+            discoveryLevel = discovery,
+            recentCooldownDays = 0
+        )
+    }
+    val matchingTrackCount = remember(cachedTrackList, previewRequest) {
+        if (cachedTracks == null) null else RadioService().generate(previewRequest, cachedTrackList).size
+    }
+    val selectionExplanation = when {
+        selectedArtist != null && station.type == RadioType.ARTIST_RADIO -> "Based on artist: $selectedArtist"
+        selectedGenre != null && station.type in setOf(RadioType.GENRE_RADIO, RadioType.MOOD_RADIO, RadioType.STYLE_RADIO) -> "Based on Plex genre: $selectedGenre"
+        selectedCollection != null && station.type == RadioType.COLLECTION_RADIO -> "Based on Plex collection: $selectedCollection"
+        selectedDecade != null && station.type in setOf(RadioType.DECADE_RADIO, RadioType.TIME_TRAVEL) -> "Based on release decade: $selectedDecade–${selectedDecade!! + 9}"
+        station.type == RadioType.RECENTLY_ADDED_RADIO -> "Ranked by Plex added time"
+        station.type == RadioType.DEEP_CUTS -> "Ranked by lowest play count"
+        station.type == RadioType.FORGOTTEN_FAVORITES -> "Played history, excluding recent listens"
+        else -> "Selected from your indexed Plex library"
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(station.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(station.subtitle, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = when (matchingTrackCount) {
+                        null -> "Checking cached Plex tracks…"
+                        0 -> "No cached Plex tracks match these selections. Sync your library to refresh metadata."
+                        else -> "$matchingTrackCount matching cached Plex tracks"
+                    },
+                    color = if (matchingTrackCount == 0) Color(0xFFFBBF24) else Color.White.copy(alpha = 0.65f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = selectionExplanation,
+                    color = Color.White.copy(alpha = 0.48f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text("Tracks: ${trackCount.toInt()}")
+                Slider(value = trackCount, onValueChange = { trackCount = it }, valueRange = 10f..100f, steps = 8)
+                Text("Discovery")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DiscoveryLevel.values().forEach { level ->
+                        FilterChip(selected = discovery == level, onClick = { discovery = level }, label = { Text(level.name.replace('_', ' '), fontSize = 11.sp) })
+                    }
+                }
+                Text("Recent-play cooldown: ${cooldown.toInt()} days")
+                Slider(value = cooldown, onValueChange = { cooldown = it }, valueRange = 0f..30f, steps = 5)
+                if (station.type == RadioType.GENRE_RADIO || station.type == RadioType.MOOD_RADIO || station.type == RadioType.STYLE_RADIO) {
+                    Text("Genre")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(genres) { genre ->
+                            FilterChip(selected = selectedGenre == genre, onClick = { selectedGenre = genre }, label = { Text(genre, fontSize = 11.sp) })
+                        }
+                    }
+                }
+                if (station.type == RadioType.DECADE_RADIO || station.type == RadioType.TIME_TRAVEL) {
+                    Text("Decade")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(decades) { decade ->
+                            FilterChip(selected = selectedDecade == decade, onClick = { selectedDecade = decade }, label = { Text("$decade", fontSize = 11.sp) })
+                        }
+                    }
+                }
+                if (station.type == RadioType.COLLECTION_RADIO) {
+                    Text("Collection")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(collections) { collection ->
+                            FilterChip(selected = selectedCollection == collection, onClick = { selectedCollection = collection }, label = { Text(collection, fontSize = 11.sp) })
+                        }
+                    }
+                }
+                if (station.type == RadioType.ARTIST_RADIO) {
+                    Text("Artist")
+                    Text(
+                        text = selectedArtist?.let { "Selected: $it" } ?: if (cachedTracks == null) "Loading cached Plex artists…" else "No cached artists available",
+                        color = Color.White.copy(alpha = 0.65f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(artists) { artist ->
+                            FilterChip(selected = selectedArtist == artist, onClick = { selectedArtist = artist }, label = { Text(artist, fontSize = 11.sp) })
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                onPlay(RadioRequest(station.type, seedArtist = selectedArtist, genre = selectedGenre, collection = selectedCollection, decadeStart = selectedDecade, trackCount = trackCount.toInt(), discoveryLevel = discovery, recentCooldownDays = cooldown.toInt()))
+            }, enabled = when (station.type) {
+                RadioType.ARTIST_RADIO -> selectedArtist != null
+                RadioType.MOOD_RADIO, RadioType.STYLE_RADIO, RadioType.GENRE_RADIO -> selectedGenre != null
+                RadioType.DECADE_RADIO, RadioType.TIME_TRAVEL -> selectedDecade != null
+                RadioType.COLLECTION_RADIO -> selectedCollection != null
+                else -> true
+            }) { Text("Play station") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 // ==========================================
@@ -372,6 +642,14 @@ fun HomeHeader(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            Text(
+                text = if (isConfigured) "Local-first • Plex metadata" else "Cached music • Offline capable",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = Color.White.copy(alpha = 0.45f),
+                    letterSpacing = 0.2.sp
+                ),
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
 
         Row(
@@ -380,7 +658,8 @@ fun HomeHeader(
         ) {
             // Cast/Output visual icon
             IconButton(
-                onClick = {},
+                onClick = { /* Casting support is not implemented yet. */ },
+                enabled = false,
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
@@ -388,8 +667,8 @@ fun HomeHeader(
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Cast,
-                    contentDescription = "Cast output",
-                    tint = Color.White.copy(alpha = 0.8f),
+                    contentDescription = "Casting unavailable",
+                    tint = Color.White.copy(alpha = 0.35f),
                     modifier = Modifier.size(18.dp)
                 )
             }
@@ -436,7 +715,7 @@ fun UnconfiguredBanner(onNavigateToSettings: () -> Unit) {
                     tint = Color(0xFFFCA5A5)
                 )
                 Text(
-                    text = "Welcome to your Audio Dashboard!",
+                    text = "Your Plex library is offline",
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -547,7 +826,7 @@ fun RecentPlayCard(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (play.thumb.isNotEmpty()) "$normalizedBaseUrl${play.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (play.thumb.isNotEmpty()) "$normalizedBaseUrl${play.thumb}" else null
 
     Card(
         modifier = Modifier
@@ -572,6 +851,7 @@ fun RecentPlayCard(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = play.title,
@@ -689,12 +969,13 @@ fun AlbumCard(
     album: PlexMetadata,
     baseUrl: String,
     token: String,
+    isDownloaded: Boolean = false,
     onClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (!album.thumb.isNullOrEmpty()) "$normalizedBaseUrl${album.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (!album.thumb.isNullOrEmpty()) "$normalizedBaseUrl${album.thumb}" else null
 
     Column(
         modifier = Modifier
@@ -716,6 +997,7 @@ fun AlbumCard(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = album.title,
@@ -774,6 +1056,23 @@ fun AlbumCard(
                         fontSize = 8.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
+                    )
+                }
+            }
+
+            if (isDownloaded) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .background(Color(0xFF16A34A).copy(alpha = 0.9f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 5.dp, vertical = 3.dp)
+                ) {
+                    Icon(
+                        Icons.Rounded.CloudDownload,
+                        contentDescription = "Downloaded",
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
                     )
                 }
             }
@@ -942,7 +1241,7 @@ fun JumpBackInCard(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (jbi.thumb.isNotEmpty()) "$normalizedBaseUrl${jbi.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (jbi.thumb.isNotEmpty()) "$normalizedBaseUrl${jbi.thumb}" else null
 
     Column(
         modifier = Modifier
@@ -964,6 +1263,7 @@ fun JumpBackInCard(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = jbi.title,
@@ -1159,7 +1459,7 @@ fun LargeRecommendationCard(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (mfyItem.thumb.isNotEmpty()) "$normalizedBaseUrl${mfyItem.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (mfyItem.thumb.isNotEmpty()) "$normalizedBaseUrl${mfyItem.thumb}" else null
 
     Card(
         modifier = Modifier
@@ -1179,7 +1479,8 @@ fun LargeRecommendationCard(
                 if (imageUrl != null) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(imageUrl)
+                                .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = mfyItem.title,
@@ -1292,6 +1593,9 @@ fun MoreFromSectionLayout(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionHeader(title = section.title)
+        section.reason?.let { reason ->
+            Text(reason, color = Color.White.copy(alpha = 0.48f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+        }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -1319,7 +1623,7 @@ fun TrackCard(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (track.thumb.isNotEmpty()) "$normalizedBaseUrl${track.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (track.thumb.isNotEmpty()) "$normalizedBaseUrl${track.thumb}" else null
 
     Column(
         modifier = Modifier
@@ -1339,7 +1643,8 @@ fun TrackCard(
                 if (imageUrl != null) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(imageUrl)
+                                .data(imageUrl)
+                                .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = track.title,
@@ -1464,7 +1769,7 @@ fun OnThisDaySection(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (onThisDay.thumb.isNotEmpty()) "$normalizedBaseUrl${onThisDay.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (onThisDay.thumb.isNotEmpty()) "$normalizedBaseUrl${onThisDay.thumb}" else null
 
     Column(
         modifier = Modifier.padding(horizontal = 16.dp),
@@ -1503,6 +1808,7 @@ fun OnThisDaySection(
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
                                     .data(imageUrl)
+                                    .addHeader("X-Plex-Token", token)
                                     .crossfade(true)
                                     .build(),
                                 contentDescription = onThisDay.title,
@@ -1636,7 +1942,7 @@ fun NewReleaseCard(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (release.thumb.isNotEmpty()) "$normalizedBaseUrl${release.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (release.thumb.isNotEmpty()) "$normalizedBaseUrl${release.thumb}" else null
 
     Column(
         modifier = Modifier
@@ -1657,6 +1963,7 @@ fun NewReleaseCard(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = release.title,
@@ -1762,7 +2069,7 @@ fun RecentHistoryRow(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (recent.thumb.isNotEmpty()) "$normalizedBaseUrl${recent.thumb}?X-Plex-Token=$token" else null
+    val imageUrl = if (recent.thumb.isNotEmpty()) "$normalizedBaseUrl${recent.thumb}" else null
 
     Card(
         modifier = Modifier
@@ -1786,6 +2093,7 @@ fun RecentHistoryRow(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
                             .crossfade(true)
                             .build(),
                         contentDescription = recent.title,
@@ -1892,6 +2200,7 @@ fun AlbumGridItem(
     album: PlexMetadata,
     baseUrl: String,
     token: String,
+    isDownloaded: Boolean = false,
     onMoreClick: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -1899,6 +2208,7 @@ fun AlbumGridItem(
         album = album,
         baseUrl = baseUrl,
         token = token,
+        isDownloaded = isDownloaded,
         onClick = onClick,
         onMoreClick = onMoreClick
     )

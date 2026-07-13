@@ -21,6 +21,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.LibraryCleanupSuggestion
+import com.example.data.LibraryCleanupSuggestionService
 
 @Composable
 fun SettingsScreen(
@@ -32,6 +34,8 @@ fun SettingsScreen(
     val selectedSectionId by viewModel.selectedSectionId.collectAsStateWithLifecycle()
     val selectedLibraryName by viewModel.selectedLibraryName.collectAsStateWithLifecycle()
     val cachedCount by viewModel.cachedCount.collectAsStateWithLifecycle()
+    val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
+    val queue by viewModel.playbackManager.queue.collectAsStateWithLifecycle()
     
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val syncing by viewModel.syncing.collectAsStateWithLifecycle()
@@ -40,6 +44,23 @@ fun SettingsScreen(
     var baseUrlInput by remember { mutableStateOf(viewModel.repository.settings.baseUrl) }
     var tokenInput by remember { mutableStateOf(viewModel.repository.settings.token) }
     var hideToken by remember { mutableStateOf(true) }
+
+    val cleanupSuggestions by produceState<List<LibraryCleanupSuggestion>>(emptyList(), cachedCount, selectedSectionId) {
+        value = runCatching {
+            LibraryCleanupSuggestionService().suggest(viewModel.repository.getCachedTracksList())
+        }.getOrDefault(emptyList())
+    }
+    val collectionSuggestions by produceState<List<com.example.data.CollectionSuggestion>>(emptyList(), cachedCount, selectedSectionId) {
+        value = runCatching {
+            com.example.data.LocalCollectionSuggestionService().suggest(viewModel.repository.getCachedTracksList())
+        }.getOrDefault(emptyList())
+    }
+
+    LaunchedEffect(isConfigured) {
+        if (isConfigured && libraries.isEmpty()) {
+            viewModel.loadLibraries()
+        }
+    }
 
     val scrollState = rememberScrollState()
 
@@ -58,6 +79,89 @@ fun SettingsScreen(
             ),
             modifier = Modifier.padding(bottom = 24.dp)
         )
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.04f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.HealthAndSafety, contentDescription = "Device readiness", tint = Color(0xFF34D399))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Device Readiness", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(12.dp))
+                DiagnosticRow("Plex connection", if (isConfigured) "Configured" else "Not configured", isConfigured)
+                DiagnosticRow("Active library", selectedLibraryName.ifBlank { "Not selected" }, selectedSectionId.isNotBlank())
+                DiagnosticRow("Local index", if (cachedCount > 0) "$cachedCount tracks" else "Empty", cachedCount > 0)
+                DiagnosticRow("Offline downloads", "${downloadedTracks.count { it.status == "completed" }} ready", downloadedTracks.any { it.status == "completed" })
+                DiagnosticRow("Playback queue", "${queue.size} tracks", queue.isNotEmpty())
+                DiagnosticRow("Background playback", "Media service enabled", true)
+                DiagnosticRow("AI provider", viewModel.repository.settings.aiProvider.removeSuffix("Provider"), true)
+                Text(
+                    "Diagnostics never display Plex tokens or secret values. Physical-device checks still required for Bluetooth, lock-screen controls, and battery optimization.",
+                    color = Color.White.copy(alpha = 0.45f),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.04f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.ContentPasteSearch, contentDescription = "Metadata review", tint = Color(0xFFFBBF24))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Metadata Review", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (cleanupSuggestions.isEmpty()) "No obvious metadata issues found in the local Plex cache."
+                    else "${cleanupSuggestions.size} review-only suggestions found in cached Plex metadata.",
+                    color = Color.White.copy(alpha = 0.65f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                cleanupSuggestions.take(3).forEach { suggestion ->
+                    Text(
+                        "• ${suggestion.issue} (${suggestion.ratingKey})",
+                        color = Color(0xFFFBBF24).copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 5.dp)
+                    )
+                }
+                Text(
+                    "Suggestions are review-only; SpotAmp never edits Plex metadata automatically.",
+                    color = Color.White.copy(alpha = 0.4f),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
+
+        if (collectionSuggestions.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.04f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Collection Ideas", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("Review-only groups derived from real Plex metadata.", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                    collectionSuggestions.take(5).forEach { suggestion ->
+                        Text("${suggestion.name} · ${suggestion.ratingKeys.size} tracks", color = Color(0xFF818CF8), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                    }
+                    Text("SpotAmp will not create or edit Plex collections automatically.", color = Color.White.copy(alpha = 0.4f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
 
         // Plex Server Configuration Card
         Card(
@@ -232,9 +336,30 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    if (libraries.isEmpty()) {
+                    if (isLoading && libraries.isEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF818CF8)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                "Loading libraries from Plex…",
+                                color = Color.White.copy(alpha = 0.7f),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    } else if (libraries.isEmpty()) {
                         Text(
-                            "No music libraries detected. Ensure you have configured a Music Section on your server.",
+                            if (errorMessage != null) {
+                                "Plex did not return the library list. Check the server connection and try again."
+                            } else {
+                                "No music libraries were returned by Plex. Ensure the server has a Music Section."
+                            },
                             color = Color.White.copy(alpha = 0.5f),
                             style = MaterialTheme.typography.bodyMedium
                         )
@@ -328,7 +453,7 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Text(
-                            text = "To allow the Gemini assistant to curate playlists directly from your Plex catalog without sending your secret credentials, the app creates a secure locally indexed metadata cache of your track list inside Room database.",
+                            text = "To let the optional cloud assistant interpret playlist requests without sending Plex credentials, the app creates a secure local metadata cache of your track list inside Room.",
                             color = Color.White.copy(alpha = 0.6f),
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -568,6 +693,7 @@ fun SettingsScreen(
 
             // AI Modes Selection Card
             val activeAiProvider by viewModel.aiProviderFlow.collectAsStateWithLifecycle()
+            var modelPathInput by remember { mutableStateOf(viewModel.repository.settings.aiModelPath) }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -640,7 +766,8 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Mode 2: Cloud AI Optional", color = if (activeAiProvider == "CloudAIProvider") Color(0xFF818CF8) else Color.White, fontWeight = FontWeight.Bold)
-                            Text("Deep semantic reasoning with Gemini. Richer playlists, library summaries, and complex DJ behaviour.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                            Text("Optional cloud interpretation for richer playlists, library summaries, and DJ explanations.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                            Text("When used, a summarized library context is sent to the configured cloud provider; Plex credentials are never sent.", color = Color(0xFFFBBF24).copy(alpha = 0.8f), fontSize = 10.sp)
                         }
                         RadioButton(
                             selected = activeAiProvider == "CloudAIProvider",
@@ -650,6 +777,35 @@ fun SettingsScreen(
                     }
 
                     // Mode 3: No AI fallback
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp))
+                            .background(if (activeAiProvider == "HybridAIProvider") Color(0xFF6366F1).copy(alpha = 0.15f) else Color.Transparent)
+                            .clickable { viewModel.updateAiProvider("HybridAIProvider") }.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Mode 3: Hybrid AI", color = if (activeAiProvider == "HybridAIProvider") Color(0xFF818CF8) else Color.White, fontWeight = FontWeight.Bold)
+                            Text("Prefer local interpretation, with safe deterministic fallback behavior.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                        }
+                        RadioButton(selected = activeAiProvider == "HybridAIProvider", onClick = { viewModel.updateAiProvider("HybridAIProvider") }, colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF818CF8)))
+                    }
+
+                    if (activeAiProvider == "LocalAIProvider" || activeAiProvider == "HybridAIProvider") {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = modelPathInput,
+                            onValueChange = { modelPathInput = it; viewModel.repository.settings.aiModelPath = it },
+                            label = { Text("Local model path (optional)") },
+                            placeholder = { Text("Not loaded; rules-based fallback active") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color(0xFF6366F1), unfocusedBorderColor = Color.White.copy(alpha = 0.1f)),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("Model loading is experimental; current local provider remains deterministic and library-only.", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+                    }
+
+                    // Mode 4: No AI fallback
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -662,8 +818,8 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Mode 3: No AI Fallback", color = if (activeAiProvider == "NoAIProvider") Color(0xFF818CF8) else Color.White, fontWeight = FontWeight.Bold)
-                            Text("Works without any model using local database random recommendation algorithms.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                            Text("Mode 4: No AI Fallback", color = if (activeAiProvider == "NoAIProvider") Color(0xFF818CF8) else Color.White, fontWeight = FontWeight.Bold)
+                            Text("Works without any model using deterministic local library ranking.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
                         }
                         RadioButton(
                             selected = activeAiProvider == "NoAIProvider",
@@ -762,5 +918,13 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DiagnosticRow(label: String, value: String, healthy: Boolean) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = Color.White.copy(alpha = 0.65f), style = MaterialTheme.typography.bodySmall)
+        Text(value, color = if (healthy) Color(0xFF6EE7B7) else Color(0xFFFCA5A5), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
     }
 }

@@ -8,6 +8,9 @@ import com.example.data.MusicRepository
 import com.example.data.PlexDirectory
 import com.example.data.PlexMetadata
 import com.example.data.CachedTrack
+import com.example.data.RadioRequest
+import com.example.data.RadioService
+import com.example.data.DiscoveryLevel
 import com.example.data.RecentTrack
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
@@ -16,8 +19,13 @@ import com.example.data.HomeRecommendationEngine
 import com.example.data.DailyMix
 import com.example.data.RecommendedStation
 import com.example.data.RadioType
+import com.example.data.SmartSearchService
+import com.example.data.AppCommand
+import com.example.data.PlaybackCommandExecutor
 import com.example.data.toTrackItem
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.work.Constraints
 import androidx.work.NetworkType
@@ -33,6 +41,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // Recommendation Engine
     private val recommendationEngine = HomeRecommendationEngine(application)
+    private val radioService = RadioService()
+    private var searchJob: Job? = null
 
     // Configuration states
     private val _isConfigured = MutableStateFlow(repository.settings.isConfigured)
@@ -76,6 +86,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // Search results
     private val _searchResults = MutableStateFlow<List<PlexMetadata>>(emptyList())
     val searchResults: StateFlow<List<PlexMetadata>> = _searchResults.asStateFlow()
+    private val _searchError = MutableStateFlow<String?>(null)
+    val searchError: StateFlow<String?> = _searchError.asStateFlow()
 
     // Local DB flows
     val recentlyPlayed: StateFlow<List<RecentTrack>> = repository.recentlyPlayed
@@ -522,29 +534,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadArtistProfile(artistId: String, artistName: String) {
         viewModelScope.launch {
-            // First check if it's Bring Me the Horizon
-            if (artistName.contains("Bring Me the Horizon", ignoreCase = true)) {
-                _artistProfile.value = ArtistProfile(
-                    bio = "English rock band Bring Me the Horizon have made a steady progression from their death metal-inspired grindcore debut to melodic metalcore, maturing into a pop-savvy heavy rock powerhouse.",
-                    similarArtists = listOf(
-                        SimilarArtist("Bullet For My Valentine", "Pop/Rock"),
-                        SimilarArtist("Asking Alexandria", "Pop/Rock"),
-                        SimilarArtist("Fightstar", "Pop/Rock"),
-                        SimilarArtist("Architects", "Pop/Rock"),
-                        SimilarArtist("While She Sleeps", "Pop/Rock")
-                    ),
-                    styles = listOf(
-                        "Alternative Metal",
-                        "Metalcore",
-                        "Post-Hardcore"
-                    )
-                )
-                return@launch
-            }
-
-            // Otherwise, try to use Gemini API if configured
+            // Cloud profile enrichment is opt-in through the selected provider.
             val geminiApiKey = com.example.BuildConfig.GEMINI_API_KEY
-            if (geminiApiKey.isNotEmpty() && !geminiApiKey.contains("GEMINI_API_KEY")) {
+            val cloudEnabled = repository.settings.aiProvider == "CloudAIProvider" ||
+                repository.settings.aiProvider == "HybridAIProvider"
+            if (cloudEnabled && geminiApiKey.isNotEmpty() && !geminiApiKey.contains("GEMINI_API_KEY")) {
                 try {
                     val systemInstructionText = """
                         You are an expert music bio and metadata assistant.
@@ -587,15 +581,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // Fallback profile if Gemini fails or is not configured
+            // Keep the local path honest when no cloud profile was requested or
+            // when the provider has no verified profile result.
             _artistProfile.value = ArtistProfile(
-                bio = "$artistName is an acclaimed artist in the music library, delivering exceptional tracks and albums loved by fans worldwide.",
-                similarArtists = listOf(
-                    SimilarArtist("Linkin Park", "Alternative Rock"),
-                    SimilarArtist("Thirty Seconds to Mars", "Alternative Rock"),
-                    SimilarArtist("Deftones", "Alternative Metal")
-                ),
-                styles = listOf("Rock", "Alternative")
+                bio = "No artist profile metadata is available in the indexed Plex library.",
+                similarArtists = emptyList(),
+                styles = emptyList()
             )
         }
     }
@@ -652,15 +643,34 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun search(query: String) {
-        viewModelScope.launch {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             if (query.isBlank()) {
                 _searchResults.value = emptyList()
+                _searchError.value = null
+                _isLoading.value = false
                 return@launch
             }
+            _searchResults.value = emptyList()
+            _searchError.value = null
+            _isLoading.value = true
+            delay(150)
             try {
-                _searchResults.value = repository.smartSearch(query).ifEmpty { repository.searchPlex(query) }
+                val smartResults = repository.smartSearch(query)
+                _searchResults.value = if (smartResults.isNotEmpty() || SmartSearchService().isStructuredQuery(query)) {
+                    smartResults
+                } else {
+                    repository.searchPlex(query)
+                }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Error search", e)
+                _searchError.value = if (repository.getCachedCount() > 0) {
+                    "Plex search failed. Try again or search your cached library offline."
+                } else {
+                    "Search failed because no local library cache is available. Sync your library first."
+                }
+            } finally {
+                _isLoading.value = false
             }
         }
     }
@@ -698,11 +708,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val provider = when (repository.settings.aiProvider) {
                     "CloudAIProvider" -> com.example.data.CloudAIProvider()
                     "LocalAIProvider" -> com.example.data.LocalAIProvider()
+                    "HybridAIProvider" -> com.example.data.HybridAIProvider()
                     else -> com.example.data.NoAIProvider()
                 }
 
                 Log.d("MusicViewModel", "Generating AI playlist using provider: ${provider.name}")
-                val intent = provider.generatePlaylistIntent(prompt, cachedTracks)
+                val rawIntent = provider.generatePlaylistIntent(prompt, cachedTracks)
+                val validation = com.example.data.AIOutputValidator.playlistIntent(rawIntent)
+                val intent = validation.value ?: com.example.data.PlaylistIntent(explanation = "AI output was invalid; using deterministic fallback.")
                 _aiExplanation.value = intent.explanation
 
                 val engine = com.example.data.RecommendationEngine(getApplication())
@@ -778,48 +791,69 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.playTrack(track, queue)
     }
 
-    fun playStation(station: RecommendedStation) {
+    fun playStation(station: RecommendedStation, request: RadioRequest = RadioRequest(type = station.type)) {
         viewModelScope.launch {
+            playRadioRequest(request, station.type)
+        }
+    }
+
+    fun playSeededRadio(request: RadioRequest) {
+        viewModelScope.launch {
+            playRadioRequest(request, request.type)
+        }
+    }
+
+    private suspend fun playRadioRequest(request: RadioRequest, type: RadioType) {
             val cachedTracks = repository.getCachedTracksList()
             if (cachedTracks.isEmpty()) {
-                // Return or fallback if empty
-                return@launch
+                _errorMessage.value = "This radio needs an indexed Plex library. Sync your music first."
+                return
             }
 
-            val tracksToPlay = when (station.type) {
-                RadioType.LIBRARY_RADIO -> {
-                    cachedTracks.sortedWith(compareByDescending<CachedTrack> { it.playCount }.thenBy { it.ratingKey }).map { it.toTrackItem() }
-                }
-                RadioType.DEEP_CUTS -> {
-                    cachedTracks.sortedWith(compareBy<CachedTrack> { it.playCount }.thenBy { it.lastPlayedAt ?: Long.MIN_VALUE }.thenBy { it.ratingKey }).take(40).map { it.toTrackItem() }
-                }
-                RadioType.TIME_TRAVEL -> {
-                    cachedTracks.filter { it.year != null }.sortedWith(compareBy<CachedTrack> { it.year }.thenBy { it.ratingKey }).take(40).map { it.toTrackItem() }
-                }
-                RadioType.RANDOM_ALBUM -> {
-                    val randomAlbum = cachedTracks.groupBy { it.album }
-                        .maxWithOrNull(compareBy<Map.Entry<String, List<CachedTrack>>> { entry -> entry.value.sumOf { it.playCount } }.thenBy { it.key })?.key
-                    if (randomAlbum != null) {
-                        cachedTracks.filter { it.album == randomAlbum }.map { it.toTrackItem() }
-                    } else {
-                        cachedTracks.map { it.toTrackItem() }
-                    }
-                }
-                RadioType.SOUNDTRACK_RADIO -> {
-                    val soundtrackTracks = cachedTracks.filter { 
-                        it.album.contains("Soundtrack", true) || it.album.contains("OST", true) || it.artist.contains("Zimmer", true) 
-                    }
-                    soundtrackTracks.ifEmpty { cachedTracks }.sortedBy { it.ratingKey }.map { it.toTrackItem() }
-                }
-                else -> {
-                    cachedTracks.sortedBy { it.ratingKey }.take(40).map { it.toTrackItem() }
-                }
-            }
+            val tracksToPlay = radioService.generate(request, cachedTracks, recentlyPlayed.value)
 
             if (tracksToPlay.isNotEmpty()) {
                 playbackManager.playQueue(tracksToPlay, 0)
+                _errorMessage.value = null
+            } else {
+                _errorMessage.value = when (type) {
+                    RadioType.ARTIST_RADIO -> "No cached tracks matched that artist."
+                    RadioType.ALBUM_RADIO -> "No cached tracks matched that album."
+                    RadioType.GENRE_RADIO, RadioType.MOOD_RADIO, RadioType.STYLE_RADIO -> "No cached tracks matched that genre or style."
+                    RadioType.COLLECTION_RADIO -> "No cached tracks matched that collection."
+                    RadioType.DECADE_RADIO, RadioType.TIME_TRAVEL -> "No cached tracks matched that decade."
+                    RadioType.SOUNDTRACK_RADIO -> "No soundtrack metadata is available in the indexed library."
+                    RadioType.FORGOTTEN_FAVORITES -> "There are no forgotten favorites in the cached history yet."
+                    else -> "This radio has no matching tracks in the cached Plex library."
+                }
             }
-        }
+    }
+
+    fun executeAppCommand(command: AppCommand): Boolean {
+        val executor = PlaybackCommandExecutor(
+            onPlay = { playbackManager.play() },
+            onPause = { playbackManager.pause() },
+            onNext = { playbackManager.next() },
+            onPrevious = { playbackManager.prev() },
+            onSearch = ::search,
+            onStartRadio = { query ->
+                viewModelScope.launch {
+                    val cachedTracks = repository.getCachedTracksList()
+                    if (cachedTracks.isEmpty()) return@launch
+                    val artist = query?.trim()?.takeIf { value ->
+                        cachedTracks.any { it.artist.equals(value, ignoreCase = true) }
+                    }
+                    val request = if (artist != null) {
+                        RadioRequest(type = RadioType.ARTIST_RADIO, seedArtist = artist)
+                    } else {
+                        RadioRequest(type = RadioType.LIBRARY_RADIO)
+                    }
+                    val tracks = radioService.generate(request, cachedTracks, recentlyPlayed.value)
+                    if (tracks.isNotEmpty()) playbackManager.playQueue(tracks, 0)
+                }
+            }
+        )
+        return executor.execute(command)
     }
 }
 

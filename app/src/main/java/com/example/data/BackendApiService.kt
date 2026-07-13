@@ -127,12 +127,7 @@ object BackendClientManager {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Retrieves the Retrofit client instance pointing to your secure proxy backend.
-     * 
-     * TODO: Substitute PLEX_BASE_URL inside settings with your secure custom proxy backend URL.
-     * E.g. "https://my-music-api.selfhosted.net"
-     */
+    /** Retrieves a Retrofit client for an explicitly configured backend URL. */
     fun getApiService(backendUrl: String): BackendApiService {
         val normalizedUrl = if (backendUrl.endsWith("/")) backendUrl else "$backendUrl/"
         if (normalizedUrl == currentBackendUrl && cachedService != null) {

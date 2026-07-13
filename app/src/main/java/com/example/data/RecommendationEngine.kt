@@ -43,11 +43,84 @@ data class SmartSearchIntent(
     val decade: Int? = null,
     val downloadedOnly: Boolean = false,
     val recentlyPlayed: Boolean = false,
+    val recentlyAdded: Boolean = false,
+    val instrumentalOnly: Boolean = false,
+    val deepCutsOnly: Boolean = false,
     val minPlayCount: Int? = null
 )
 
+@Serializable
+data class AppCommand(val action: String, val query: String? = null, val ratingKey: String? = null)
+
+@Serializable
+data class MoodTagResult(val moods: List<String> = emptyList(), val energy: String = "unknown", val styleTags: List<String> = emptyList())
+
+@Serializable
+data class RecommendationExplanationRequest(val shelf: String, val ratingKeys: List<String>)
+
+@Serializable
+data class LibraryCleanupSuggestion(val ratingKey: String, val issue: String, val confidence: Float = 0f, val suggestion: String? = null)
+
+@Serializable
+data class CollectionSuggestion(val name: String, val ratingKeys: List<String> = emptyList(), val reason: String = "")
+
+@Serializable
+data class DJBlurbRequest(val ratingKey: String, val context: String = "now-playing")
+
+data class ValidationResult<T>(val value: T?, val errors: List<String>) {
+    val isValid: Boolean get() = value != null && errors.isEmpty()
+}
+
+object AIOutputValidator {
+    fun playlistIntent(intent: PlaylistIntent): ValidationResult<PlaylistIntent> {
+        val errors = mutableListOf<String>()
+        if (intent.targetTrackCount !in 1..200) errors += "targetTrackCount must be between 1 and 200"
+        if (intent.energyLevel != null && intent.energyLevel !in setOf("low", "medium", "high", "any")) errors += "energyLevel is invalid"
+        val collections = listOf(
+            "seedArtists" to intent.seedArtists,
+            "seedAlbums" to intent.seedAlbums,
+            "seedTracks" to intent.seedTracks,
+            "genres" to intent.genres,
+            "moods" to intent.moods,
+            "excludeArtists" to intent.excludeArtists,
+            "excludeGenres" to intent.excludeGenres
+        )
+        collections.forEach { (name, values) ->
+            if (values.size > 50) errors += "$name contains too many values"
+            if (values.any { it.isBlank() }) errors += "$name contains a blank value"
+        }
+        return ValidationResult(intent.takeIf { errors.isEmpty() }, errors)
+    }
+
+    fun smartSearch(intent: SmartSearchIntent): ValidationResult<SmartSearchIntent> {
+        val errors = mutableListOf<String>()
+        if (intent.decade != null && intent.decade !in 1900..2100) errors += "decade is invalid"
+        if (intent.decade != null && intent.decade % 10 != 0) errors += "decade must start on a decade boundary"
+        if (intent.minPlayCount != null && intent.minPlayCount < 0) errors += "minPlayCount cannot be negative"
+        if (intent.minPlayCount != null && intent.minPlayCount > 1_000_000) errors += "minPlayCount is too large"
+        return ValidationResult(intent.takeIf { errors.isEmpty() }, errors)
+    }
+
+    fun appCommand(command: AppCommand): ValidationResult<AppCommand> {
+        val allowed = setOf("PLAY", "PAUSE", "NEXT", "PREVIOUS", "SEARCH", "START_RADIO", "ADD_TO_QUEUE")
+        val normalizedAction = command.action.trim().uppercase(Locale.ROOT)
+        val errors = if (normalizedAction in allowed) emptyList() else listOf("action is not supported")
+        val normalized = command.copy(action = normalizedAction, query = command.query?.trim())
+        return ValidationResult(normalized.takeIf { errors.isEmpty() }, errors)
+    }
+}
+
 class SmartSearchService {
     private val stopWords = setOf("the", "and", "from", "with", "show", "find", "music", "songs", "albums", "tracks", "that", "have", "been", "only")
+
+    fun isStructuredQuery(query: String): Boolean {
+        val normalized = query.lowercase(Locale.ROOT)
+        return listOf(
+            "downloaded", "offline", "recently played", "recent plays", "played lately",
+            "recently added", "newly added", "instrumental", "without vocals",
+            "deep cut", "deep cuts", "plays", "times"
+        ).any(normalized::contains) || Regex("(19|20)\\d0s").containsMatchIn(normalized)
+    }
 
     fun parse(query: String, cachedTracks: List<CachedTrack>): SmartSearchIntent {
         val normalized = query.lowercase(Locale.ROOT)
@@ -69,7 +142,10 @@ class SmartSearchService {
             collections = collectionWords,
             decade = decade,
             downloadedOnly = normalized.contains("downloaded") || normalized.contains("offline"),
-            recentlyPlayed = normalized.contains("recent") || normalized.contains("played lately"),
+            recentlyPlayed = normalized.contains("recently played") || normalized.contains("recent plays") || normalized.contains("played lately"),
+            recentlyAdded = normalized.contains("recently added") || normalized.contains("newly added"),
+            instrumentalOnly = normalized.contains("instrumental") || normalized.contains("without vocals"),
+            deepCutsOnly = normalized.contains("deep cut") || normalized.contains("deep cuts"),
             minPlayCount = minPlayCount
         )
     }
@@ -80,6 +156,12 @@ class SmartSearchService {
             val haystack = "${track.title} ${track.artist} ${track.album} ${track.genres} ${track.collections}".lowercase(Locale.ROOT)
             val genreMatch = intent.genres.isEmpty() || intent.genres.any { haystack.contains(it) }
             if (!genreMatch) return@map track to -1
+            if (intent.decade != null && track.year !in intent.decade..(intent.decade + 9)) return@map track to -1
+            if (intent.recentlyPlayed && track.lastPlayedAt == null) return@map track to -1
+            if (intent.recentlyAdded && (track.addedAt == null || track.addedAt < System.currentTimeMillis() / 1000L - 30L * 24L * 60L * 60L)) return@map track to -1
+            if (intent.instrumentalOnly && !haystack.contains("instrumental") && !haystack.contains("classical") && !haystack.contains("ambient")) return@map track to -1
+            if (intent.deepCutsOnly && track.playCount > 0) return@map track to -1
+            if (intent.minPlayCount != null && track.playCount < intent.minPlayCount) return@map track to -1
             if (intent.artists.any { track.artist.equals(it, true) }) score += 100
             if (intent.albums.any { track.album.equals(it, true) }) score += 100
             if (intent.genres.any { haystack.contains(it) }) score += 40
@@ -105,8 +187,22 @@ interface AIProvider {
     suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent
 }
 
+data class LocalAIStatus(
+    val loaded: Boolean,
+    val modelPath: String,
+    val backend: String = "Rules-based fallback",
+    val lastError: String? = null
+)
+
+class HybridAIProvider : AIProvider {
+    private val local = LocalAIProvider()
+    override val name = "Hybrid AI (Local first)"
+    override suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent =
+        local.generatePlaylistIntent(prompt, cachedTracks)
+}
+
 class CloudAIProvider : AIProvider {
-    override val name = "Cloud AI (Gemini 3.5 Flash)"
+    override val name = "Cloud AI Provider"
 
     override suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent = withContext(Dispatchers.IO) {
         val geminiApiKey = BuildConfig.GEMINI_API_KEY
@@ -198,7 +294,7 @@ class LocalAIProvider : AIProvider {
     // -------------------------------------------------------------------------------------
 
     override suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent = withContext(Dispatchers.Default) {
-        Log.d("LocalAIProvider", "Using fast, private Local Rules-based engine for prompt: $prompt")
+        Log.d("LocalAIProvider", "Using fast, private local rules-based engine")
         
         val lowercasePrompt = prompt.lowercase(Locale.ROOT)
         
@@ -270,7 +366,7 @@ class NoAIProvider : AIProvider {
     override val name = "No AI (Pure Algorithms)"
 
     override suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent = withContext(Dispatchers.Default) {
-        Log.d("NoAIProvider", "No AI fallback activated. Converting to generic random mix of library tracks.")
+        Log.d("NoAIProvider", "No AI fallback activated. Using deterministic local library ranking.")
         PlaylistIntent(
             explanation = "Pure local algorithmic fallback selection.",
             targetTrackCount = 20,
@@ -392,13 +488,18 @@ class RecommendationEngine(private val context: Context) {
             }
         }
 
-        // If selection is too small, fill it up with random tracks to meet the user's requested count
+        // If selection is too small, fill it from the remaining cached library in stable order.
         if (finalSelection.size < intent.targetTrackCount && cachedTracks.isNotEmpty()) {
-            val extraTracks = cachedTracks.shuffled()
+            val extraTracks = cachedTracks
+                .asSequence()
+                .filterNot { candidate -> finalSelection.contains(candidate) }
+                .sortedWith(compareByDescending<CachedTrack> { it.playCount }
+                    .thenByDescending { it.lastPlayedAt ?: 0L }
+                    .thenBy { it.artist.lowercase(Locale.ROOT) }
+                    .thenBy { it.album.lowercase(Locale.ROOT) }
+                    .thenBy { it.ratingKey })
             for (track in extraTracks) {
-                if (!finalSelection.contains(track)) {
-                    finalSelection.add(track)
-                }
+                finalSelection.add(track)
                 if (finalSelection.size >= intent.targetTrackCount) {
                     break
                 }
