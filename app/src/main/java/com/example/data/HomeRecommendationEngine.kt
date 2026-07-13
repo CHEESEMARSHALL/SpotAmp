@@ -434,7 +434,7 @@ class HomeRecommendationEngine(private val context: Context) {
                 MoreFromSection(
                     title = "More from $artistName",
                     type = "artist",
-                    tracks = tracks.shuffled().take(8).map { it.toTrackItem() }
+                    tracks = tracks.sortedBy { it.ratingKey }.take(8).map { it.toTrackItem() }
                 )
             )
         }

@@ -3,11 +3,15 @@ package com.example.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKeys
 
 class PlexSettingsManager(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("plex_settings", Context.MODE_PRIVATE)
+    private val prefs: SharedPreferences
 
     companion object {
+        private const val PREFS_NAME = "plex_settings_secure"
+        private const val LEGACY_PREFS_NAME = "plex_settings"
         private const val KEY_BASE_URL = "plex_base_url"
         private const val KEY_TOKEN = "plex_token"
         private const val KEY_SECTION_ID = "plex_section_id"
@@ -24,6 +28,28 @@ class PlexSettingsManager(context: Context) {
         private const val KEY_NORMALIZATION = "normalization_enabled"
         
         private const val KEY_AI_PROVIDER = "ai_provider"
+    }
+
+    init {
+        val legacy = context.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+        val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+        prefs = EncryptedSharedPreferences.create(
+            PREFS_NAME,
+            masterKey,
+            context,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+        if (prefs.getString(KEY_TOKEN, null).isNullOrEmpty() && legacy.getString(KEY_TOKEN, null).orEmpty().isNotEmpty()) {
+            val migration = prefs.edit()
+            listOf(KEY_BASE_URL, KEY_TOKEN, KEY_SECTION_ID, KEY_LIBRARY_NAME, KEY_LASTFM_USERNAME, KEY_LASTFM_SESSION_KEY, KEY_THEME, KEY_EQ_PRESET, KEY_AI_PROVIDER).forEach { key ->
+                legacy.getString(key, null)?.let { migration.putString(key, it) }
+            }
+            listOf(KEY_LASTFM_ENABLED, KEY_GAPLESS, KEY_EQ_ENABLED, KEY_NORMALIZATION).forEach { key ->
+                if (legacy.contains(key)) migration.putBoolean(key, legacy.getBoolean(key, false))
+            }
+            migration.apply()
+        }
     }
 
     var activeTheme: String

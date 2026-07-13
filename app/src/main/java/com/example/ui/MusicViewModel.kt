@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.MusicRepository
 import com.example.data.PlexDirectory
 import com.example.data.PlexMetadata
+import com.example.data.CachedTrack
 import com.example.data.RecentTrack
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
@@ -657,7 +658,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             try {
-                _searchResults.value = repository.searchPlex(query)
+                _searchResults.value = repository.smartSearch(query).ifEmpty { repository.searchPlex(query) }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Error search", e)
             }
@@ -787,16 +788,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
             val tracksToPlay = when (station.type) {
                 RadioType.LIBRARY_RADIO -> {
-                    cachedTracks.shuffled().map { it.toTrackItem() }
+                    cachedTracks.sortedWith(compareByDescending<CachedTrack> { it.playCount }.thenBy { it.ratingKey }).map { it.toTrackItem() }
                 }
                 RadioType.DEEP_CUTS -> {
-                    cachedTracks.sortedBy { it.ratingKey }.take(30).shuffled().map { it.toTrackItem() }
+                    cachedTracks.sortedWith(compareBy<CachedTrack> { it.playCount }.thenBy { it.lastPlayedAt ?: Long.MIN_VALUE }.thenBy { it.ratingKey }).take(40).map { it.toTrackItem() }
                 }
                 RadioType.TIME_TRAVEL -> {
-                    cachedTracks.shuffled().take(30).map { it.toTrackItem() }
+                    cachedTracks.filter { it.year != null }.sortedWith(compareBy<CachedTrack> { it.year }.thenBy { it.ratingKey }).take(40).map { it.toTrackItem() }
                 }
                 RadioType.RANDOM_ALBUM -> {
-                    val randomAlbum = cachedTracks.map { it.album }.distinct().randomOrNull()
+                    val randomAlbum = cachedTracks.groupBy { it.album }
+                        .maxWithOrNull(compareBy<Map.Entry<String, List<CachedTrack>>> { entry -> entry.value.sumOf { it.playCount } }.thenBy { it.key })?.key
                     if (randomAlbum != null) {
                         cachedTracks.filter { it.album == randomAlbum }.map { it.toTrackItem() }
                     } else {
@@ -807,10 +809,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     val soundtrackTracks = cachedTracks.filter { 
                         it.album.contains("Soundtrack", true) || it.album.contains("OST", true) || it.artist.contains("Zimmer", true) 
                     }
-                    soundtrackTracks.ifEmpty { cachedTracks }.shuffled().map { it.toTrackItem() }
+                    soundtrackTracks.ifEmpty { cachedTracks }.sortedBy { it.ratingKey }.map { it.toTrackItem() }
                 }
                 else -> {
-                    cachedTracks.shuffled().take(40).map { it.toTrackItem() }
+                    cachedTracks.sortedBy { it.ratingKey }.take(40).map { it.toTrackItem() }
                 }
             }
 

@@ -267,6 +267,25 @@ class MusicRepository(private val context: Context) {
         }
     }
 
+    suspend fun smartSearch(query: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
+        val cached = musicDao.getCachedTracksList()
+        val downloaded = musicDao.getDownloadedTracksList().filter { it.status == "completed" }.map { it.ratingKey }.toSet()
+        val service = SmartSearchService()
+        service.filter(service.parse(query, cached), cached, downloaded).map { track ->
+            PlexMetadata(
+                ratingKey = track.ratingKey,
+                key = track.key,
+                title = track.title,
+                type = "track",
+                thumb = track.thumb,
+                parentTitle = track.album,
+                grandparentTitle = track.artist,
+                duration = track.duration,
+                media = listOf(PlexMedia(listOf(PlexPart(track.key))))
+            )
+        }
+    }
+
     private suspend fun searchCachedTracks(query: String): List<PlexMetadata> =
         musicDao.searchCachedTracks(query).map { track ->
             PlexMetadata(

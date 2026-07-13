@@ -33,6 +33,64 @@ data class PlaylistIntent(
     val explanation: String? = null
 )
 
+@Serializable
+data class SmartSearchIntent(
+    val textTerms: List<String> = emptyList(),
+    val artists: List<String> = emptyList(),
+    val albums: List<String> = emptyList(),
+    val genres: List<String> = emptyList(),
+    val collections: List<String> = emptyList(),
+    val decade: Int? = null,
+    val downloadedOnly: Boolean = false,
+    val recentlyPlayed: Boolean = false,
+    val minPlayCount: Int? = null
+)
+
+class SmartSearchService {
+    fun parse(query: String, cachedTracks: List<CachedTrack>): SmartSearchIntent {
+        val normalized = query.lowercase(Locale.ROOT)
+        val artists = cachedTracks.map { it.artist }.distinct().filter { normalized.contains(it.lowercase(Locale.ROOT)) }
+        val albums = cachedTracks.map { it.album }.distinct().filter { normalized.contains(it.lowercase(Locale.ROOT)) }
+        val genreWords = listOf("rock", "metal", "metalcore", "pop", "jazz", "classical", "rap", "hip hop", "electronic", "ambient", "soundtrack", "anime")
+            .filter { normalized.contains(it) }
+        val collectionWords = cachedTracks.flatMap { it.collections.split('|') }.filter { it.isNotBlank() }.distinct()
+            .filter { normalized.contains(it.lowercase(Locale.ROOT)) }
+        val decade = Regex("(19|20)\\d0s").find(normalized)?.value?.take(4)?.toIntOrNull()
+        val minPlayCount = Regex("(\\d+)\\s*(?:plays|times)").find(normalized)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return SmartSearchIntent(
+            textTerms = query.split(Regex("\\s+" )).filter { it.length > 2 },
+            artists = artists,
+            albums = albums,
+            genres = genreWords,
+            collections = collectionWords,
+            decade = decade,
+            downloadedOnly = normalized.contains("downloaded") || normalized.contains("offline"),
+            recentlyPlayed = normalized.contains("recent") || normalized.contains("played lately"),
+            minPlayCount = minPlayCount
+        )
+    }
+
+    fun filter(intent: SmartSearchIntent, tracks: List<CachedTrack>, downloadedKeys: Set<String> = emptySet()): List<CachedTrack> {
+        return tracks.map { track ->
+            var score = 0
+            val haystack = "${track.title} ${track.artist} ${track.album} ${track.genres} ${track.collections}".lowercase(Locale.ROOT)
+            if (intent.artists.any { track.artist.equals(it, true) }) score += 100
+            if (intent.albums.any { track.album.equals(it, true) }) score += 100
+            if (intent.genres.any { haystack.contains(it) }) score += 40
+            if (intent.collections.any { track.collections.contains(it, true) }) score += 40
+            if (intent.decade != null && track.year?.let { it in intent.decade..(intent.decade + 9) } == true) score += 30
+            if (intent.recentlyPlayed && track.lastPlayedAt != null) score += 30
+            if (intent.minPlayCount != null && track.playCount >= intent.minPlayCount) score += 30
+            if (intent.downloadedOnly && track.ratingKey !in downloadedKeys) score = -1
+            intent.textTerms.filter { haystack.contains(it.lowercase(Locale.ROOT)) }.forEach { score += 5 }
+            track to score
+        }.filter { it.second >= 0 && (it.second > 0 || intent.textTerms.isEmpty()) }
+            .sortedWith(compareByDescending<Pair<CachedTrack, Int>> { it.second }.thenBy { it.first.ratingKey })
+            .take(100)
+            .map { it.first }
+    }
+}
+
 // ==============================================================
 // 2. AIProvider Interface & Implementations (Cloud, Local, NoAI)
 // ==============================================================
@@ -99,7 +157,7 @@ class CloudAIProvider : AIProvider {
         try {
             val response = GeminiClient.service.generateContent(geminiApiKey, request)
             val jsonText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
-            Log.d("CloudAIProvider", "Raw JSON from Gemini: $jsonText")
+            Log.d("CloudAIProvider", "Gemini response received (${jsonText.length} chars)")
 
             val json = Json { 
                 ignoreUnknownKeys = true
