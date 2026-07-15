@@ -3,7 +3,13 @@ package com.example.ui
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.input.pointer.pointerInput
+
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,9 +60,12 @@ fun NowPlayingScreen(
     val duration by playbackManager.duration.collectAsStateWithLifecycle()
     val shuffleMode by playbackManager.shuffleModeEnabled.collectAsStateWithLifecycle()
     val repeatMode by playbackManager.repeatMode.collectAsStateWithLifecycle()
+    val lyrics by playbackManager.currentLyrics.collectAsStateWithLifecycle()
+    val lyricsLoading by playbackManager.lyricsLoading.collectAsStateWithLifecycle()
 
     var showQueue by remember { mutableStateOf(false) }
     var showContextMenu by remember { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
@@ -64,11 +73,23 @@ fun NowPlayingScreen(
         if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
     }
 
+    val spectrum = remember { FloatArray(48) }
+    val waveform = remember { FloatArray(128) }
+    var visualizerMode by remember { mutableStateOf(PlaybackArtworkMode.ARTWORK) }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF080808))
+            .pointerInput(Unit) {
+                detectVerticalDragGestures { change, dragAmount ->
+                    if (dragAmount > 50) { // Simple threshold for swipe down
+                        onCollapse()
+                    }
+                }
+            }
     ) {
+
         // 1. Blurred Background Artwork
         if (imageUrl != null) {
             AsyncImage(
@@ -160,47 +181,38 @@ fun NowPlayingScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    // Elevated Custom Styled Card Cover
-                    Card(
-                        modifier = Modifier
-                            .aspectRatio(1f)
-                            .fillMaxWidth(0.85f)
-                            .padding(bottom = 32.dp),
-                        shape = RoundedCornerShape(32.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f))
-                    ) {
-                        if (imageUrl != null) {
-                            AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(imageUrl)
-                                        .addHeader("X-Plex-Token", token)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = currentTrack?.title ?: "Album Cover",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(
-                                        Brush.linearGradient(
-                                            colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
-                                        )
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.MusicNote,
-                                    contentDescription = "No Artwork",
-                                    tint = Color.White.copy(alpha = 0.2f),
-                                    modifier = Modifier.size(96.dp)
-                                )
-                            }
-                        }
+                    // Elevated Custom Styled Visual Surface or Lyrics Panel
+                    if (showLyrics) {
+                        LyricsPanel(
+                            lyrics = lyrics,
+                            loading = lyricsLoading,
+                            positionMs = progress,
+                            onSeek = playbackManager::seekTo,
+                            onClose = { showLyrics = false },
+                            onReload = { playbackManager.loadLyricsForTrack(currentTrack) },
+                            modifier = Modifier
+                                .aspectRatio(1f)
+                                .fillMaxWidth(0.85f)
+                                .padding(bottom = 32.dp)
+                                .clip(RoundedCornerShape(32.dp))
+                        )
+                    } else {
+                        PlaybackVisualSurface(
+                            artworkUrl = imageUrl,
+                            spectrum = spectrum,
+                            waveform = waveform,
+                            mode = visualizerMode,
+                            onModeChange = { visualizerMode = it },
+                            onClick = { 
+                                showLyrics = true
+                                playbackManager.loadLyricsForTrack(currentTrack)
+                            },
+                            modifier = Modifier
+                                .aspectRatio(1f)
+                                .fillMaxWidth(0.85f)
+                                .padding(bottom = 32.dp)
+                                .clip(RoundedCornerShape(32.dp))
+                        )
                     }
 
                     // Metadata Titles with Like & Context Menu
@@ -434,31 +446,22 @@ fun NowPlayingScreen(
                     .padding(bottom = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 2. Playback Seek Slider
-                var sliderSeekingValue by remember { mutableStateOf<Float?>(null) }
-                val currentPosition = sliderSeekingValue?.toLong() ?: progress
+                // 2. Playback Seek Slider (Custom Waveform)
+                val currentPosition = progress
                 val displayPosition = formatDuration(currentPosition)
-                val displayDuration = formatDuration(duration)
 
-                Slider(
-                    value = (if (duration > 0) currentPosition.toFloat() / duration else 0f).coerceIn(0f, 1f),
-                    onValueChange = { percent ->
-                        sliderSeekingValue = (percent * duration).toFloat()
+                WaveformDurationBar(
+                    progress = progress,
+                    duration = duration,
+                    trackId = currentTrack?.ratingKey ?: "default",
+                    onSeek = { position ->
+                        playbackManager.seekTo(position)
                     },
-                    onValueChangeFinished = {
-                        sliderSeekingValue?.let {
-                            playbackManager.seekTo(it.toLong())
-                        }
-                        sliderSeekingValue = null
-                    },
-                    colors = SliderDefaults.colors(
-                        thumbColor = Color(0xFF818CF8),
-                        activeTrackColor = Color(0xFF818CF8),
-                        inactiveTrackColor = Color.White.copy(alpha = 0.1f)
-                    ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("playback_slider")
+                        .padding(vertical = 12.dp)
+                        .testTag("playback_slider"),
+                    activeColor = MaterialTheme.colorScheme.primary
                 )
 
                 Row(
@@ -605,4 +608,129 @@ fun formatDuration(ms: Long): String {
     val min = totalSec / 60
     val sec = totalSec % 60
     return String.format("%d:%02d", min, sec)
+}
+
+@Composable
+fun WaveformDurationBar(
+    progress: Long,
+    duration: Long,
+    trackId: String,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+    activeColor: Color = MaterialTheme.colorScheme.primary
+) {
+    val barsCount = 75
+    // Generate deterministic heights based on trackId with some beautiful peaks and valleys
+    val heights = remember(trackId) {
+        val random = java.util.Random(trackId.hashCode().toLong())
+        List(barsCount) { index ->
+            val centerFactor = 1.0f - (Math.abs(index - barsCount / 2f) / (barsCount / 2f))
+            // Make the wave look like a real master track with some silent/dense sections
+            val noise = random.nextFloat()
+            val wave = if (index % 12 == 0) 0.15f else if (index % 7 == 0) 0.85f else 0.4f + noise * 0.5f
+            (0.1f + wave * 0.9f) * (0.3f + centerFactor * 0.7f)
+        }
+    }
+
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableStateOf(0f) }
+
+    val currentFraction = if (isDragging) {
+        dragFraction
+    } else {
+        if (duration > 0) progress.toFloat() / duration else 0f
+    }.coerceIn(0f, 1f)
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(56.dp)
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(duration) {
+                    detectTapGestures { offset ->
+                        if (duration > 0) {
+                            val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                            onSeek((fraction * duration).toLong())
+                        }
+                    }
+                }
+                .pointerInput(duration) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { offset ->
+                            isDragging = true
+                            dragFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                        },
+                        onDragEnd = {
+                            isDragging = false
+                            onSeek((dragFraction * duration).toLong())
+                        },
+                        onDragCancel = {
+                            isDragging = false
+                        },
+                        onHorizontalDrag = { change, _ ->
+                            val fraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                            dragFraction = fraction
+                        }
+                    )
+                }
+        ) {
+            val canvasWidth = size.width
+            val canvasHeight = size.height
+            val gap = 2.dp.toPx()
+            val totalGaps = (barsCount - 1) * gap
+            val barWidth = (canvasWidth - totalGaps) / barsCount
+            val middleY = canvasHeight / 2f
+
+            for (i in 0 until barsCount) {
+                val heightPercent = heights[i]
+                val barHeight = canvasHeight * heightPercent
+                val x = i * (barWidth + gap)
+                val top = middleY - barHeight / 2f
+
+                val barFraction = i.toFloat() / barsCount
+                val isPlayed = barFraction <= currentFraction
+                
+                // Determine color based on active theme
+                val color = if (isPlayed) {
+                    activeColor
+                } else {
+                    Color.White.copy(alpha = 0.12f)
+                }
+
+                drawRoundRect(
+                    color = color,
+                    topLeft = androidx.compose.ui.geometry.Offset(x, top),
+                    size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f, barWidth / 2f)
+                )
+            }
+
+            // Draw playhead glowing dot or vertical neon bar at the current played fraction
+            val playheadX = currentFraction * canvasWidth
+            if (playheadX > 0f && playheadX < canvasWidth) {
+                // Neon glow line at playhead
+                drawRoundRect(
+                    color = Color.White,
+                    topLeft = androidx.compose.ui.geometry.Offset(playheadX - 1.5.dp.toPx(), 4.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(3.dp.toPx(), canvasHeight - 8.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5.dp.toPx(), 1.5.dp.toPx())
+                )
+                // Outer subtle glow circle
+                drawCircle(
+                    color = activeColor.copy(alpha = 0.4f),
+                    radius = 8.dp.toPx(),
+                    center = androidx.compose.ui.geometry.Offset(playheadX, middleY)
+                )
+                // Inner solid circle
+                drawCircle(
+                    color = Color.White,
+                    radius = 4.dp.toPx(),
+                    center = androidx.compose.ui.geometry.Offset(playheadX, middleY)
+                )
+            }
+        }
+    }
 }

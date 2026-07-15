@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.PlexMetadata
+import com.example.playback.TrackItem
 
 enum class ViewMode { Grid, List }
 enum class SortOption { Name, RecentlyAdded }
@@ -41,6 +42,7 @@ fun LibraryScreen(
     onNavigateToArtist: (String, String) -> Unit,
     onNavigateToAlbum: (String, String) -> Unit,
     onNavigateToPlaylist: (Int, String) -> Unit,
+    onNavigateToCustomPlaylist: (String, String, String, String, List<TrackItem>, List<Long>) -> Unit = { _, _, _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val artists by viewModel.artists.collectAsStateWithLifecycle()

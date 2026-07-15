@@ -141,4 +141,47 @@ class RadioServiceTest {
 
         assertEquals(listOf("old", "new"), result.map { it.ratingKey })
     }
+
+    @Test
+    fun `decade radio fallback when start is null`() {
+        val tracks = listOf(
+            CachedTrack("old", "Old", "Artist", "Album", "/old", "", 1, year = 1975),
+            CachedTrack("mid", "Mid", "Artist Two", "Album", "/mid", "", 1, year = 1982),
+            CachedTrack("new", "New", "Artist Three", "Album", "/new", "", 1, year = 2021)
+        )
+        // Earliest year is 1975, so default decade should be 1970 (1970..1979)
+        val result = RadioService().generate(
+            RadioRequest(RadioType.DECADE_RADIO, decadeStart = null, trackCount = 10, recentCooldownDays = 0),
+            tracks
+        )
+        assertEquals(listOf("old"), result.map { it.ratingKey })
+    }
+
+    @Test
+    fun `time travel radio sorts chronologically ascending`() {
+        val tracks = listOf(
+            CachedTrack("new", "New", "Artist", "Album", "/new", "", 1, year = 2021),
+            CachedTrack("old", "Old", "Artist Two", "Album", "/old", "", 1, year = 1975),
+            CachedTrack("mid", "Mid", "Artist Three", "Album", "/mid", "", 1, year = 1999)
+        )
+        val result = RadioService().generate(
+            RadioRequest(RadioType.TIME_TRAVEL, decadeStart = null, trackCount = 10, recentCooldownDays = 0),
+            tracks
+        )
+        assertEquals(listOf("old", "mid", "new"), result.map { it.ratingKey })
+    }
+
+    @Test
+    fun `time travel radio filters by start decade`() {
+        val tracks = listOf(
+            CachedTrack("old", "Old", "Artist", "Album", "/old", "", 1, year = 1975),
+            CachedTrack("mid", "Mid", "Artist Two", "Album", "/mid", "", 1, year = 1992),
+            CachedTrack("new", "New", "Artist Three", "Album", "/new", "", 1, year = 2021)
+        )
+        val result = RadioService().generate(
+            RadioRequest(RadioType.TIME_TRAVEL, decadeStart = 1990, trackCount = 10, recentCooldownDays = 0),
+            tracks
+        )
+        assertEquals(listOf("mid", "new"), result.map { it.ratingKey })
+    }
 }

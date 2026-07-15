@@ -8,6 +8,7 @@ import com.example.data.MusicRepository
 import com.example.data.PlexDirectory
 import com.example.data.PlexMetadata
 import com.example.data.CachedTrack
+import com.example.data.SyncStateEntity
 import com.example.data.RadioRequest
 import com.example.data.RadioService
 import com.example.data.DiscoveryLevel
@@ -16,6 +17,7 @@ import com.example.data.LibrarySyncState
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
 import com.example.data.HomeFeedState
+import com.example.sync.SyncScheduler
 import com.example.data.HomeRecommendationEngine
 import com.example.data.DailyMix
 import com.example.data.RecommendedStation
@@ -173,6 +175,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _lastFmSessionKeyFlow = MutableStateFlow(repository.settings.lastFmSessionKey)
     val lastFmSessionKeyFlow: StateFlow<String> = _lastFmSessionKeyFlow.asStateFlow()
 
+    private val _syncIntervalHoursFlow = MutableStateFlow(repository.settings.syncIntervalHours)
+    val syncIntervalHoursFlow: StateFlow<Long> = _syncIntervalHoursFlow.asStateFlow()
+
+    private val _ggufModelSizeFlow = MutableStateFlow(repository.settings.ggufModelSize)
+    val ggufModelSizeFlow: StateFlow<String> = _ggufModelSizeFlow.asStateFlow()
+
+    fun updateGgufModelSize(size: String) {
+        repository.settings.ggufModelSize = size
+        _ggufModelSizeFlow.value = size
+    }
+
     fun updateTheme(themeName: String) {
         repository.settings.activeTheme = themeName
         _activeThemeFlow.value = themeName
@@ -214,6 +227,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun updateLastFmSessionKey(sessionKey: String) {
         repository.settings.lastFmSessionKey = sessionKey
         _lastFmSessionKeyFlow.value = sessionKey
+    }
+
+    fun updateSyncInterval(hours: Long) {
+        repository.settings.syncIntervalHours = hours
+        _syncIntervalHoursFlow.value = hours
+        if (hours > 0) {
+            SyncScheduler.scheduleSync(getApplication(), hours)
+        } else {
+            SyncScheduler.cancelSync(getApplication())
+        }
     }
 
     fun playTrackFromCache(track: CachedTrack) {
@@ -399,11 +422,36 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         updatePlaybackCredentials()
         loadCachedCount()
         
+        // Schedule background sync if enabled
+        val interval = repository.settings.syncIntervalHours
+        if (interval > 0) {
+            SyncScheduler.scheduleSync(application, interval)
+        }
+        
         if (repository.settings.isConfigured) {
             loadLibraries()
             if (repository.settings.sectionId.isNotEmpty()) {
                 loadInitialLibraryData()
             }
+        }
+
+        viewModelScope.launch {
+            _selectedSectionId
+                .flatMapLatest { sectionId ->
+                    if (sectionId.isEmpty()) flowOf(null)
+                    else repository.getSyncStateFlow(sectionId)
+                }
+                .collect { entity ->
+                    _syncState.value = when (entity?.status) {
+                        "running" -> LibrarySyncState.Processing(entity.currentOffset, entity.totalTracks, 0)
+                        "completed" -> {
+                            loadInitialLibraryData()
+                            LibrarySyncState.Complete(entity.totalTracks, 0, 0)
+                        }
+                        "failed" -> LibrarySyncState.Failed("Sync failed", entity.lastError ?: "Unknown", "Indexing")
+                        else -> LibrarySyncState.Idle
+                    }
+                }
         }
     }
 
@@ -411,9 +459,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.setCredentials(repository.settings.baseUrl, repository.settings.token)
     }
 
-    fun saveCredentials(baseUrl: String, token: String) {
+    fun saveCredentials(baseUrl: String, token: String, lyricsDirectory: String = "") {
         repository.settings.baseUrl = baseUrl.trim()
         repository.settings.token = token.trim()
+        repository.settings.lyricsDirectory = lyricsDirectory.trim()
         _isConfigured.value = repository.settings.isConfigured
         updatePlaybackCredentials()
         if (repository.settings.isConfigured) {
@@ -677,8 +726,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             delay(150)
             try {
                 val smartResults = repository.smartSearch(query)
-                _searchResults.value = if (smartResults.isNotEmpty() || SmartSearchService().isStructuredQuery(query)) {
+                _searchResults.value = if (smartResults.isNotEmpty()) {
                     smartResults
+                } else if (com.example.data.SmartSearchService().isStructuredQuery(query) && repository.getCachedCount() > 0) {
+                    emptyList()
                 } else {
                     repository.searchPlex(query)
                 }
@@ -699,16 +750,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val section = _selectedSectionId.value
         if (section.isEmpty()) return
         viewModelScope.launch {
-            _syncState.value = LibrarySyncState.Connecting
-            _errorMessage.value = null
-            try {
-                repository.syncTrackCache(section) { state ->
-                    _syncState.value = state
-                }
-                loadCachedCount()
-            } catch (e: Exception) {
-                // Error handled in repository and passed via state
-            }
+            repository.startSync(section, restart = true)
         }
     }
 
@@ -728,15 +770,37 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val provider = when (repository.settings.aiProvider) {
                     "CloudAIProvider" -> com.example.data.CloudAIProvider()
                     "LocalAIProvider" -> com.example.data.LocalAIProvider()
+                    "LlamaCppAIProvider" -> com.example.data.LlamaCppAIProvider(
+                        modelPath = repository.settings.aiModelPath,
+                        contextSize = 2048,
+                        temperature = 0.7f,
+                        modelPresetSize = repository.settings.ggufModelSize
+                    )
                     "HybridAIProvider" -> com.example.data.HybridAIProvider()
                     else -> com.example.data.NoAIProvider()
                 }
 
                 Log.d("MusicViewModel", "Generating AI playlist using provider: ${provider.name}")
-                val rawIntent = provider.generatePlaylistIntent(prompt, cachedTracks)
+                var explanationPrefix: String? = null
+                val rawIntent = try {
+                    provider.generatePlaylistIntent(prompt, cachedTracks)
+                } catch (e: Exception) {
+                    if (provider is com.example.data.CloudAIProvider) {
+                        Log.w("MusicViewModel", "Cloud AI failed; falling back to local on-device provider", e)
+                        explanationPrefix = "Cloud AI is not configured or offline. Fell back to fast local on-device parser.\n\n"
+                        com.example.data.LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+                    } else {
+                        throw e
+                    }
+                }
                 val validation = com.example.data.AIOutputValidator.playlistIntent(rawIntent)
                 val intent = validation.value ?: com.example.data.PlaylistIntent(explanation = "AI output was invalid; using deterministic fallback.")
-                _aiExplanation.value = intent.explanation
+                
+                _aiExplanation.value = if (explanationPrefix != null) {
+                    explanationPrefix + (intent.explanation ?: "")
+                } else {
+                    intent.explanation
+                }
 
                 val engine = com.example.data.RecommendationEngine(getApplication())
                 val tracks = engine.buildRecommendationQueue(intent, cachedTracks)
@@ -795,6 +859,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearErrorMessage() {
         _errorMessage.value = null
+    }
+
+    suspend fun generateRadioTracks(request: RadioRequest): List<TrackItem> {
+        val cachedTracks = repository.getCachedTracksList()
+        return radioService.generate(request, cachedTracks, recentlyPlayed.value)
+    }
+
+    fun postErrorMessage(message: String?) {
+        _errorMessage.value = message
     }
 
     fun clearAiError() {

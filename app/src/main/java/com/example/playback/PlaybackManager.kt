@@ -73,6 +73,12 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private val _repeatMode = MutableStateFlow<Int>(Player.REPEAT_MODE_OFF)
     val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
 
+    private val _currentLyrics = MutableStateFlow<Lyrics?>(null)
+    val currentLyrics: StateFlow<Lyrics?> = _currentLyrics.asStateFlow()
+
+    private val _lyricsLoading = MutableStateFlow<Boolean>(false)
+    val lyricsLoading: StateFlow<Boolean> = _lyricsLoading.asStateFlow()
+
     // Database helper to insert into recently played history
     private var musicDao: MusicDao? = null
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -128,10 +134,16 @@ class PlaybackManager private constructor(private val appContext: Context) {
         val restored = PlaybackStateRestoration.restore(state) ?: return
         _queue.value = restored.queue
         _currentIndex.value = restored.currentIndex
-        _currentTrack.value = restored.queue[restored.currentIndex]
+        val track = restored.queue[restored.currentIndex]
+        _currentTrack.value = track
         _progress.value = restored.positionMs
         _shuffleModeEnabled.value = restored.shuffleEnabled
         _repeatMode.value = restored.repeatMode
+        mainHandler.post {
+            exoPlayer?.shuffleModeEnabled = restored.shuffleEnabled
+            exoPlayer?.repeatMode = restored.repeatMode
+        }
+        loadLyricsForTrack(track)
     }
 
     private fun persistPlaybackState() {
@@ -170,6 +182,10 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     _isLoading.value = false
                 }
 
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    applyAudioEffects()
+                }
+
                 override fun onIsPlayingChanged(playing: Boolean) {
                     _isPlaying.value = playing
                     if (playing) {
@@ -193,9 +209,13 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
+                    android.util.Log.d("PlaybackManager", "Playback state changed: $state")
                     _isLoading.value = state == Player.STATE_BUFFERING
                     if (state == Player.STATE_READY) {
-                        _duration.value = duration
+                        val duration = exoPlayer?.duration ?: 0L
+                        if (duration > 0) {
+                            _duration.value = duration
+                        }
                     }
                 }
 
@@ -232,13 +252,10 @@ class PlaybackManager private constructor(private val appContext: Context) {
                                 hasScrobbledCurrent = false
                                 val settings = PlexSettingsManager(appContext)
                                 LastFmScrobbler.updateNowPlaying(appContext, settings, track)
+                                loadLyricsForTrack(track)
                             }
                         }
                     }
-                }
-
-                override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                    applyAudioEffects()
                 }
             })
         }
@@ -277,6 +294,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
                         .build()
                 }
                 player.addMediaItems(mediaItems)
+                player.shuffleModeEnabled = _shuffleModeEnabled.value
+                player.repeatMode = _repeatMode.value
                 if (startIndex in mediaItems.indices) {
                     player.seekTo(startIndex, 0L)
                 }
@@ -312,9 +331,28 @@ class PlaybackManager private constructor(private val appContext: Context) {
         }
     }
 
+    fun getLocalAudioFile(track: TrackItem): File? {
+        val localPath = track.localPath
+        if (!localPath.isNullOrEmpty()) {
+            val f = File(localPath)
+            if (f.exists() && f.isFile) return f
+        }
+        val targetDir = appContext.getExternalFilesDir("music") ?: File(appContext.filesDir, "music")
+        if (targetDir.exists()) {
+            val possibleExtensions = listOf("mp3", "flac", "m4a", "wav", "ogg", "aac")
+            for (ext in possibleExtensions) {
+                val file = File(targetDir, "${track.ratingKey}.$ext")
+                if (file.exists() && file.isFile) {
+                    return file
+                }
+            }
+        }
+        return null
+    }
+
     private fun mediaUri(track: TrackItem, normalizedBaseUrl: String = baseUrl.trimEnd('/')): String {
-        val local = track.localPath?.let(::File)
-        if (local?.isFile == true) return local.toURI().toString()
+        val localFile = getLocalAudioFile(track)
+        if (localFile != null) return localFile.toURI().toString()
         return "$normalizedBaseUrl${track.key}"
     }
 
@@ -690,6 +728,168 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 dynamicsProcessing?.release()
                 dynamicsProcessing = null
             } catch (e: Exception) { e.printStackTrace() }
+        }
+    }
+
+    private var lyricsJob: Job? = null
+
+    private fun findFileCaseInsensitive(parentDir: File, baseNames: List<String>, extensions: List<String>): File? {
+        if (!parentDir.exists() || !parentDir.isDirectory) return null
+        val files = parentDir.listFiles() ?: return null
+        
+        val lowercaseBaseNames = baseNames.map { it.lowercase().trim() }
+        val lowercaseExtensions = extensions.map { it.lowercase().trim() }
+        
+        // First, try exact matches (faster)
+        for (base in baseNames) {
+            for (ext in extensions) {
+                val exactFile = File(parentDir, "$base.$ext")
+                if (exactFile.exists() && exactFile.isFile) return exactFile
+            }
+        }
+        
+        // If not found, do case-insensitive match
+        return files.firstOrNull { file ->
+            file.isFile && 
+            lowercaseBaseNames.contains(file.nameWithoutExtension.lowercase().trim()) &&
+            lowercaseExtensions.contains(file.extension.lowercase().trim())
+        }
+    }
+
+    fun loadLyricsForTrack(track: TrackItem?) {
+        lyricsJob?.cancel()
+        if (track == null) {
+            _currentLyrics.value = null
+            _lyricsLoading.value = false
+            return
+        }
+
+        _lyricsLoading.value = true
+        lyricsJob = coroutineScope.launch(Dispatchers.IO) {
+            try {
+                var lyricsLoaded = false
+
+                // 1. Try to fetch lyrics from Plex Server if online/streaming
+                if (baseUrl.isNotEmpty() && token.isNotEmpty() && track.ratingKey.isNotEmpty()) {
+                    try {
+                        val apiService = com.example.data.PlexClientManager.getApiService(baseUrl)
+                        val detail = apiService.getMetadataDetail(track.ratingKey, token)
+                        val metadata = detail.mediaContainer.metadata?.firstOrNull()
+                        val mediaStreams = metadata?.media?.flatMap { it.part.orEmpty() }?.flatMap { it.streams.orEmpty() }
+                        
+                        // Look for a subtitle/lyric stream (streamType == 4)
+                        val lyricStream = mediaStreams?.firstOrNull { it.streamType == 4 }
+                        if (lyricStream != null && !lyricStream.key.isNullOrEmpty()) {
+                            val streamUrl = if (lyricStream.key.startsWith("http")) {
+                                lyricStream.key
+                            } else {
+                                "${baseUrl.trimEnd('/')}${lyricStream.key}?X-Plex-Token=$token"
+                            }
+                            
+                            val request = okhttp3.Request.Builder()
+                                .url(streamUrl)
+                                .get()
+                                .build()
+                            
+                            val client = okhttp3.OkHttpClient.Builder()
+                                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                                .build()
+                                
+                            client.newCall(request).execute().use { response ->
+                                if (response.isSuccessful) {
+                                    val content = response.body?.string()
+                                    if (!content.isNullOrBlank()) {
+                                        val codec = lyricStream.codec?.lowercase() ?: lyricStream.format?.lowercase() ?: "lrc"
+                                        val isLrc = codec == "lrc"
+                                        val lyrics = LyricsParser.parse(content, isLrc)
+                                        _currentLyrics.value = lyrics
+                                        lyricsLoaded = true
+                                        android.util.Log.d("PlaybackManager", "Successfully fetched lyrics from Plex Server for track ${track.title}")
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("PlaybackManager", "Error fetching lyrics from Plex Server", e)
+                    }
+                }
+
+                // 2. Fallback to local files if not loaded from Plex Server
+                if (!lyricsLoaded) {
+                    val settings = PlexSettingsManager(appContext)
+                    
+                    val artistCleaned = track.artist.replace("[/\\\\?%*:|\"<>]".toRegex(), "_").trim()
+                    val titleCleaned = track.title.replace("[/\\\\?%*:|\"<>]".toRegex(), "_").trim()
+                    
+                    val baseNames = mutableListOf(
+                        "$artistCleaned - $titleCleaned",
+                        "${track.artist.trim()} - ${track.title.trim()}",
+                        titleCleaned,
+                        track.title.trim()
+                    )
+
+                    // Try to find local audio file to get its parent dir and base name
+                    val audioFile = getLocalAudioFile(track)
+                    val localParentDir = audioFile?.parentFile
+                    if (audioFile != null) {
+                        baseNames.add(audioFile.nameWithoutExtension)
+                    }
+
+                    // Collect parent directories to search in
+                    val searchDirs = mutableListOf<File>()
+                    
+                    // A. Parent of the downloaded audio file
+                    if (localParentDir != null && localParentDir.exists()) {
+                        searchDirs.add(localParentDir)
+                    }
+                    
+                    // B. Custom configurable directory
+                    val customLyricsDirStr = settings.lyricsDirectory
+                    if (customLyricsDirStr.isNotEmpty()) {
+                        val customDir = File(customLyricsDirStr)
+                        if (customDir.exists()) {
+                            searchDirs.add(customDir)
+                        }
+                    }
+                    
+                    // C. Fallback default music directory
+                    val defaultMusicDir = appContext.getExternalFilesDir("music") ?: File(appContext.filesDir, "music")
+                    if (defaultMusicDir.exists()) {
+                        searchDirs.add(defaultMusicDir)
+                    }
+
+                    var selectedFile: File? = null
+                    
+                    // Prioritize LRC first, then TXT
+                    val extensions = listOf("lrc", "txt")
+                    
+                    for (ext in extensions) {
+                        for (dir in searchDirs.distinct()) {
+                            val found = findFileCaseInsensitive(dir, baseNames.distinct(), listOf(ext))
+                            if (found != null) {
+                                selectedFile = found
+                                break
+                            }
+                        }
+                        if (selectedFile != null) break
+                    }
+
+                    if (selectedFile != null && selectedFile.exists()) {
+                        val isLrc = selectedFile.extension.lowercase() == "lrc"
+                        val content = selectedFile.readText(Charsets.UTF_8)
+                        val lyrics = LyricsParser.parse(content, isLrc)
+                        _currentLyrics.value = lyrics
+                    } else {
+                        _currentLyrics.value = null
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PlaybackManager", "Error loading lyrics for ${track.title}", e)
+                _currentLyrics.value = null
+            } finally {
+                _lyricsLoading.value = false
+            }
         }
     }
 

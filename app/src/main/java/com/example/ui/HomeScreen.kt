@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -33,6 +34,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.*
 import com.example.playback.TrackItem
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -40,6 +42,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToArtist: (String, String) -> Unit,
     onNavigateToAlbum: (String, String) -> Unit,
+    onNavigateToCustomPlaylist: (String, String, String, String, List<TrackItem>, List<Long>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isConfigured by viewModel.isConfigured.collectAsStateWithLifecycle()
@@ -49,8 +52,11 @@ fun HomeScreen(
     val cachedCount by viewModel.cachedCount.collectAsStateWithLifecycle()
     val errorMessage by viewModel.errorMessage.collectAsStateWithLifecycle()
 
+    val coroutineScope = rememberCoroutineScope()
+
     var activeContextMenu by remember { mutableStateOf<ContextMenuItem?>(null) }
     var selectedStation by remember { mutableStateOf<RecommendedStation?>(null) }
+    var activePremiumScreen by remember { mutableStateOf<RecommendedStation?>(null) }
     val baseUrl = viewModel.repository.settings.baseUrl
     val token = viewModel.repository.settings.token
 
@@ -154,8 +160,17 @@ fun HomeScreen(
                     item {
                         DailyMixesSection(
                             mixes = homeFeedState.dailyMixes,
+                            baseUrl = baseUrl,
+                            token = token,
                             onMixClick = { mix ->
-                                viewModel.playDailyMix(mix)
+                                onNavigateToCustomPlaylist(
+                                    "daily_mix",
+                                    mix.id,
+                                    mix.title,
+                                    mix.description,
+                                    mix.tracks,
+                                    mix.colors
+                                )
                             }
                         )
                     }
@@ -187,7 +202,13 @@ fun HomeScreen(
                     item {
                         RecommendedStationsSection(
                             stations = homeFeedState.stations,
-                            onStationClick = { station -> selectedStation = station }
+                            onStationClick = { station ->
+                                if (station.type in setOf(RadioType.ARTIST_RADIO, RadioType.ALBUM_RADIO, RadioType.STYLE_RADIO, RadioType.MOOD_RADIO, RadioType.GENRE_RADIO, RadioType.DECADE_RADIO, RadioType.TIME_TRAVEL)) {
+                                    activePremiumScreen = station
+                                } else {
+                                    selectedStation = station
+                                }
+                            }
                         )
                     }
                 }
@@ -343,7 +364,21 @@ fun HomeScreen(
                 onDismiss = { selectedStation = null },
                 onPlay = { request ->
                     selectedStation = null
-                    viewModel.playStation(station, request)
+                    coroutineScope.launch {
+                        val tracks = viewModel.generateRadioTracks(request)
+                        if (tracks.isNotEmpty()) {
+                            onNavigateToCustomPlaylist(
+                                "radio",
+                                "radio_${request.type.name}_${System.currentTimeMillis()}",
+                                station.title,
+                                station.subtitle,
+                                tracks,
+                                station.gradientColors
+                            )
+                        } else {
+                            viewModel.postErrorMessage("No matching tracks found in your offline Plex cache.")
+                        }
+                    }
                 }
             )
         }
@@ -357,6 +392,49 @@ fun HomeScreen(
                 onNavigateToArtist = onNavigateToArtist,
                 onNavigateToAlbum = onNavigateToAlbum
             )
+        }
+
+        // Premium Station Selector Screen Overlay
+        AnimatedVisibility(
+            visible = activePremiumScreen != null,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            activePremiumScreen?.let { station ->
+                when (station.type) {
+                    RadioType.ARTIST_RADIO -> ArtistMixBuilderScreen(
+                        viewModel = viewModel,
+                        baseUrl = baseUrl,
+                        token = token,
+                        onBack = { activePremiumScreen = null },
+                        onNavigateToCustomPlaylist = { type, id, title, desc, tracks, colors ->
+                            activePremiumScreen = null
+                            onNavigateToCustomPlaylist(type, id, title, desc, tracks, colors)
+                        }
+                    )
+                    RadioType.ALBUM_RADIO -> AlbumMixBuilderScreen(
+                        viewModel = viewModel,
+                        baseUrl = baseUrl,
+                        token = token,
+                        onBack = { activePremiumScreen = null },
+                        onNavigateToCustomPlaylist = { type, id, title, desc, tracks, colors ->
+                            activePremiumScreen = null
+                            onNavigateToCustomPlaylist(type, id, title, desc, tracks, colors)
+                        }
+                    )
+                    RadioType.STYLE_RADIO, RadioType.MOOD_RADIO, RadioType.GENRE_RADIO, RadioType.DECADE_RADIO, RadioType.TIME_TRAVEL -> GenericRadioSelectorScreen(
+                        station = station,
+                        viewModel = viewModel,
+                        onBack = { activePremiumScreen = null },
+                        onNavigateToCustomPlaylist = { type, id, title, desc, tracks, colors ->
+                            activePremiumScreen = null
+                            onNavigateToCustomPlaylist(type, id, title, desc, tracks, colors)
+                        }
+                    )
+                    else -> {}
+                }
+            }
         }
     }
 }
@@ -1104,6 +1182,8 @@ fun AlbumCard(
 @Composable
 fun DailyMixesSection(
     mixes: List<DailyMix>,
+    baseUrl: String,
+    token: String,
     onMixClick: (DailyMix) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1113,7 +1193,7 @@ fun DailyMixesSection(
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(mixes) { mix ->
-                MixCard(mix = mix, onClick = { onMixClick(mix) })
+                MixCard(mix = mix, baseUrl = baseUrl, token = token, onClick = { onMixClick(mix) })
             }
         }
     }
@@ -1122,15 +1202,30 @@ fun DailyMixesSection(
 @Composable
 fun MixCard(
     mix: DailyMix,
+    baseUrl: String,
+    token: String,
     onClick: () -> Unit
 ) {
     val gradientColors = mix.colors.map { Color(it) }
+    val track = mix.tracks.firstOrNull()
+    val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
+    val context = LocalContext.current
+    val imageRequest = remember(track?.thumb) {
+        if (track != null && track.thumb.isNotEmpty()) {
+            ImageRequest.Builder(context)
+                .data("$normalizedBaseUrl${track.thumb}")
+                .addHeader("X-Plex-Token", token)
+                .crossfade(true)
+                .build()
+        } else null
+    }
 
     Card(
         modifier = Modifier
             .width(160.dp)
-            .height(180.dp)
-            .clickable { onClick() },
+            .height(240.dp)
+            .clickable { onClick() }
+            .testTag("daily_mix_card_${mix.id}"),
         shape = RoundedCornerShape(24.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
@@ -1139,68 +1234,90 @@ fun MixCard(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Brush.verticalGradient(colors = gradientColors))
-                .padding(14.dp)
         ) {
-            // Background design elements (music discs overlay)
-            Icon(
-                imageVector = Icons.Rounded.MusicNote,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.05f),
-                modifier = Modifier
-                    .size(120.dp)
-                    .align(Alignment.BottomEnd)
-                    .offset(x = 20.dp, y = 20.dp)
-            )
-
             Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.SpaceBetween
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                // Top portion: Prominent artist thumbnail
+                Box(
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.Black.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    if (imageRequest != null) {
+                        AsyncImage(
+                            model = imageRequest,
+                            contentDescription = mix.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.Person,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.3f),
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
+                }
+
+                // Title and description section
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "MIX",
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White,
-                            letterSpacing = 1.sp
+                        Box(
+                            modifier = Modifier
+                                .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "MIX",
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+
+                        Icon(
+                            imageVector = Icons.Rounded.PlayCircle,
+                            contentDescription = "Play Mix",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp)
                         )
                     }
 
-                    Icon(
-                        imageVector = Icons.Rounded.PlayCircleFilled,
-                        contentDescription = "Play Mix",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = mix.title,
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Black,
+                            fontWeight = FontWeight.Bold,
                             color = Color.White,
-                            fontSize = 18.sp
-                        )
+                            fontSize = 14.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = mix.description,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = Color.White.copy(alpha = 0.8f),
+                            color = Color.White.copy(alpha = 0.7f),
                             fontWeight = FontWeight.Medium,
                             fontSize = 10.sp,
-                            lineHeight = 13.sp
+                            lineHeight = 12.sp
                         ),
-                        maxLines = 3,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1343,77 +1460,149 @@ fun RecommendedStationsSection(
     stations: List<RecommendedStation>,
     onStationClick: (RecommendedStation) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionHeader(title = "Recommended Stations")
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(stations) { station ->
-                RadioTile(station = station, onClick = { onStationClick(station) })
+    // resolve the 9 main options
+    val libraryRadio = stations.firstOrNull { it.type == RadioType.LIBRARY_RADIO } ?: RecommendedStation("st_lib", "Library Radio", "Continuous mix of your self-hosted collection", RadioType.LIBRARY_RADIO, listOf(0xFF1E3A8A, 0xFF0D9488))
+    val artistMixBuilder = stations.firstOrNull { it.type == RadioType.ARTIST_RADIO } ?: RecommendedStation("st_art", "Artist Mix Builder", "Build a station around selected artists", RadioType.ARTIST_RADIO, listOf(0xFF065F46, 0xFF10B981))
+    val albumMixBuilder = RecommendedStation("st_alb", "Album Mix Builder", "Build a station around selected albums", RadioType.ALBUM_RADIO, listOf(0xFF4C0519, 0xFFF43F5E))
+    val deepCuts = stations.firstOrNull { it.type == RadioType.DEEP_CUTS } ?: RecommendedStation("st_deep", "Deep Cuts Radio", "Unearth rare, lesser-played library files", RadioType.DEEP_CUTS, listOf(0xFF130026, 0xFF8B5CF6))
+    val timeTravel = stations.firstOrNull { it.type == RadioType.TIME_TRAVEL } ?: RecommendedStation("st_time", "Time Travel Radio", "Songs from a selected release decade", RadioType.TIME_TRAVEL, listOf(0xFF451A03, 0xFFD97706))
+    val randomAlbum = stations.firstOrNull { it.type == RadioType.RANDOM_ALBUM } ?: RecommendedStation("st_rand", "Random Album Radio", "Plays full albums entirely at random", RadioType.RANDOM_ALBUM, listOf(0xFF172554, 0xFF3B82F6))
+    val styleRadio = stations.firstOrNull { it.type == RadioType.STYLE_RADIO || it.type == RadioType.GENRE_RADIO } ?: RecommendedStation("st_style", "Style Radio", "Play tracks with genre tags", RadioType.STYLE_RADIO, listOf(0xFF3B0764, 0xFFEC4899))
+    val moodRadio = stations.firstOrNull { it.type == RadioType.MOOD_RADIO } ?: RecommendedStation("st_mood", "Mood Radio", "Filter library by mood/genre", RadioType.MOOD_RADIO, listOf(0xFF022C22, 0xFF059669))
+    val decadeRadio = stations.firstOrNull { it.type == RadioType.DECADE_RADIO } ?: RecommendedStation("st_decade", "Decade Radio", "Select a release decade", RadioType.DECADE_RADIO, listOf(0xFF431407, 0xFFF97316))
+
+    val gridItems = listOf(
+        artistMixBuilder, albumMixBuilder, libraryRadio,
+        deepCuts, timeTravel, randomAlbum,
+        styleRadio, moodRadio, decadeRadio
+    )
+
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(horizontal = 16.dp)) {
+        // High-end Section Header matching Photo 1 exactly: STATIONS capitalized with a neat divider
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                text = "STATIONS",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp,
+                    color = Color.White
+                )
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.08f))
+            )
+        }
+        
+        // Dynamic 3x3 layout using standard Rows & Columns for complete scroll safety
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            gridItems.chunked(3).forEach { rowItems ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    rowItems.forEach { station ->
+                        PremiumStationTile(
+                            station = station,
+                            onClick = { onStationClick(station) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun RadioTile(
+fun PremiumStationTile(
     station: RecommendedStation,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val gradientBrushes = station.gradientColors.map { Color(it) }
+    val gradientColors = station.gradientColors.map { Color(it) }
+    val titleLines = when (station.type) {
+        RadioType.ARTIST_RADIO -> listOf("Artist Mix", "Builder")
+        RadioType.ALBUM_RADIO -> listOf("Album Mix", "Builder")
+        RadioType.LIBRARY_RADIO -> listOf("Library", "Radio")
+        RadioType.DEEP_CUTS -> listOf("Deep Cuts", "Radio")
+        RadioType.TIME_TRAVEL -> listOf("Time Travel", "Radio")
+        RadioType.RANDOM_ALBUM -> listOf("Random Album", "Radio")
+        RadioType.STYLE_RADIO -> listOf("Style", "Radio")
+        RadioType.MOOD_RADIO -> listOf("Mood", "Radio")
+        RadioType.DECADE_RADIO -> listOf("Decade", "Radio")
+        else -> listOf(station.title, "")
+    }
+
+    val icon = when (station.type) {
+        RadioType.ARTIST_RADIO -> Icons.Rounded.NorthEast
+        RadioType.ALBUM_RADIO -> Icons.Rounded.PlaylistAdd
+        RadioType.LIBRARY_RADIO -> Icons.Rounded.Sensors
+        RadioType.DEEP_CUTS -> Icons.Rounded.Sensors
+        RadioType.TIME_TRAVEL -> Icons.Rounded.Sensors
+        RadioType.RANDOM_ALBUM -> Icons.Rounded.Sensors
+        RadioType.STYLE_RADIO -> Icons.Rounded.Sensors
+        RadioType.MOOD_RADIO -> Icons.Rounded.Sensors
+        RadioType.DECADE_RADIO -> Icons.Rounded.Sensors
+        else -> Icons.Rounded.Radio
+    }
 
     Card(
-        modifier = Modifier
-            .width(150.dp)
+        modifier = modifier
+            .height(115.dp)
             .clickable { onClick() },
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f))
     ) {
-        Row(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .background(Brush.horizontalGradient(gradientBrushes))
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .fillMaxSize()
+                .background(Brush.verticalGradient(colors = gradientColors))
+                .padding(12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Radio,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
                 Text(
-                    text = station.title,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.Black,
-                        color = Color.White,
-                        fontSize = 13.sp
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    text = titleLines[0],
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
                 )
-                Text(
-                    text = station.subtitle,
-                    style = MaterialTheme.typography.bodySmall.copy(
+                if (titleLines[1].isNotEmpty()) {
+                    Text(
+                        text = titleLines[1],
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
                         color = Color.White.copy(alpha = 0.7f),
-                        fontSize = 10.sp
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                        textAlign = TextAlign.Center,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }

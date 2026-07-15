@@ -20,13 +20,19 @@ object PlaybackStateRestoration {
     fun restore(state: PlaybackStateEntity, isTrackAvailable: (TrackItem) -> Boolean): RestoredState? {
         return try {
             val allQueue = Json.decodeFromString<List<TrackItem>>(state.queueJson)
-            val queue = allQueue.filter(isTrackAvailable)
+            val queue = allQueue.filter { track ->
+                if (track.localPath.isNullOrBlank()) {
+                    true
+                } else {
+                    isTrackAvailable(track)
+                }
+            }
             if (queue.isEmpty()) return null
             
             RestoredState(
                 queue = queue,
                 currentIndex = 0,
-                positionMs = state.positionMs,
+                positionMs = state.positionMs.coerceAtLeast(0L),
                 shuffleEnabled = state.shuffleEnabled,
                 repeatMode = state.repeatMode
             )

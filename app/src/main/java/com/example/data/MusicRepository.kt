@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.playback.TrackItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import okhttp3.Request
@@ -29,6 +30,10 @@ class MusicRepository(private val context: Context) {
 
     // Flow for cached tracks count (to see if indexed)
     val cachedTracksCount: Flow<List<CachedTrack>> = musicDao.getAllCachedTracks()
+
+    fun getSyncStateFlow(sectionId: String): Flow<SyncStateEntity?> {
+        return musicDao.getSyncStateFlow(sectionId)
+    }
 
     suspend fun getCachedCount(): Int = withContext(Dispatchers.IO) {
         musicDao.getCachedTracksCount()
@@ -324,67 +329,44 @@ class MusicRepository(private val context: Context) {
             )
         }
 
-    suspend fun syncTrackCache(sectionId: String, onProgress: (LibrarySyncState) -> Unit) = withContext(Dispatchers.IO) {
-        onProgress(LibrarySyncState.Connecting)
-        try {
-            // Clear the cache before starting the sync
-            musicDao.clearCachedTracks()
-
-            var totalReceived = 0
-            var validCount = 0
-            var skippedCount = 0
-            var offset = 0
-            val pageSize = 200
-
-            while (true) {
-                onProgress(LibrarySyncState.Fetching(offset / pageSize + 1, totalReceived))
-                val page = getService().getLibraryItems(sectionId, "10", offset, pageSize, settings.token)
-                    .mediaContainer.metadata.orEmpty()
-                
-                if (page.isEmpty()) break
-                
-                totalReceived += page.size
-
-                val entities = page.map { track ->
-                    val trackKey = track.media?.firstOrNull()?.part?.firstOrNull()?.key
-                    if (trackKey.isNullOrEmpty()) {
-                        skippedCount++
-                        null
-                    } else {
-                        validCount++
-                        CachedTrack(
-                            ratingKey = track.ratingKey,
-                            title = track.title,
-                            artist = track.grandparentTitle ?: track.parentTitle ?: "Unknown Artist",
-                            album = track.parentTitle ?: "Unknown Album",
-                            key = trackKey,
-                            thumb = track.thumb ?: "",
-                            duration = track.duration ?: 0L,
-                            year = track.year,
-                            addedAt = track.addedAt,
-                            playCount = track.viewCount ?: 0,
-                            lastPlayedAt = track.lastViewedAt,
-                            genres = track.genres.orEmpty().joinToString("|") { it.tag },
-                            collections = track.collections.orEmpty().joinToString("|") { it.tag }
-                        )
-                    }
-                }.filterNotNull()
-
-                musicDao.insertCachedTracks(entities)
-                
-                onProgress(LibrarySyncState.Processing(totalReceived, validCount, skippedCount))
-
-                if (page.size < pageSize) break
-                offset += page.size
+    private suspend fun <T> retryIO(
+        times: Int = 3,
+        initialDelayMs: Long = 1000,
+        factor: Double = 2.0,
+        block: suspend () -> T
+    ): T {
+        var currentDelay = initialDelayMs
+        repeat(times - 1) { attempt ->
+            try {
+                return block()
+            } catch (e: Exception) {
+                Log.w("MusicRepository", "Plex API call failed (attempt ${attempt + 1}/$times): ${e.localizedMessage}. Retrying in ${currentDelay}ms...")
+                delay(currentDelay)
+                currentDelay = (currentDelay * factor).toLong()
             }
-            
-            Log.d("MusicRepository", "Sync complete: indexed $validCount tracks, skipped $skippedCount")
-            onProgress(LibrarySyncState.Complete(validCount, skippedCount, 0))
-        } catch (e: Exception) {
-            Log.e("MusicRepository", "Error syncing track cache", e)
-            onProgress(LibrarySyncState.Failed("Sync failed", e.localizedMessage ?: "Unknown error", "Indexing"))
-            throw e
         }
+        return block()
+    }
+
+    suspend fun startSync(sectionId: String, restart: Boolean = false) = withContext(Dispatchers.IO) {
+        val workManager = androidx.work.WorkManager.getInstance(context)
+        val data = androidx.work.workDataOf(
+            "sectionId" to sectionId,
+            "restart" to restart
+        )
+        val request = androidx.work.OneTimeWorkRequestBuilder<LibrarySyncWorker>()
+            .setInputData(data)
+            .setConstraints(
+                androidx.work.Constraints.Builder()
+                    .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        workManager.enqueueUniqueWork(
+            "sync_$sectionId",
+            if (restart) androidx.work.ExistingWorkPolicy.REPLACE else androidx.work.ExistingWorkPolicy.KEEP,
+            request
+        )
     }
 
     suspend fun generateAiPlaylist(prompt: String): List<TrackItem> = withContext(Dispatchers.IO) {

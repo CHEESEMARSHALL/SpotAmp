@@ -37,6 +37,7 @@ fun SettingsScreen(
     val cachedCount by viewModel.cachedCount.collectAsStateWithLifecycle()
     val downloadedTracks by viewModel.downloadedTracks.collectAsStateWithLifecycle()
     val queue by viewModel.playbackManager.queue.collectAsStateWithLifecycle()
+    val activeTheme by viewModel.activeThemeFlow.collectAsStateWithLifecycle()
     
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
@@ -44,6 +45,7 @@ fun SettingsScreen(
 
     var baseUrlInput by remember { mutableStateOf(viewModel.repository.settings.baseUrl) }
     var tokenInput by remember { mutableStateOf(viewModel.repository.settings.token) }
+    var lyricsDirInput by remember { mutableStateOf(viewModel.repository.settings.lyricsDirectory) }
     var hideToken by remember { mutableStateOf(true) }
 
     val cleanupSuggestions by produceState<List<LibraryCleanupSuggestion>>(emptyList(), cachedCount, selectedSectionId) {
@@ -165,13 +167,27 @@ fun SettingsScreen(
         }
 
         // Plex Server Configuration Card
+        val isLightTheme = activeTheme == "Warm Light"
+        val labelColor = if (isLightTheme) MaterialTheme.colorScheme.onSurface else Color.White
+        val subLabelColor = if (isLightTheme) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.8f)
+        val placeholderColor = if (isLightTheme) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.4f)
+        val cardBgColor = if (isLightTheme) MaterialTheme.colorScheme.surface else Color.White.copy(alpha = 0.05f)
+        val cardBorder = androidx.compose.foundation.BorderStroke(1.dp, if (isLightTheme) MaterialTheme.colorScheme.outline.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.10f))
+        
+        val inputFocusedText = if (isLightTheme) MaterialTheme.colorScheme.onSurface else Color.White
+        val inputUnfocusedText = if (isLightTheme) MaterialTheme.colorScheme.onSurface else Color.White
+        val inputFocusedContainer = if (isLightTheme) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else Color.Black.copy(alpha = 0.4f)
+        val inputUnfocusedContainer = if (isLightTheme) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.4f)
+        val inputFocusedBorder = if (isLightTheme) MaterialTheme.colorScheme.primary else Color(0xFF6366F1).copy(alpha = 0.5f)
+        val inputUnfocusedBorder = if (isLightTheme) MaterialTheme.colorScheme.outline.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.05f)
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 24.dp),
             shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+            colors = CardDefaults.cardColors(containerColor = cardBgColor),
+            border = cardBorder,
             elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -179,14 +195,14 @@ fun SettingsScreen(
                     Icon(
                         imageVector = Icons.Rounded.CloudQueue,
                         contentDescription = "Plex Connection",
-                        tint = Color(0xFF818CF8)
+                        tint = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
                         text = "Plex Media Server Settings",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = labelColor
                         )
                     )
                 }
@@ -198,22 +214,22 @@ fun SettingsScreen(
                     text = "Plex Server URL",
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = FontWeight.Bold,
-                        color = Color.White.copy(alpha = 0.8f)
+                        color = subLabelColor
                     ),
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
                 OutlinedTextField(
                     value = baseUrlInput,
                     onValueChange = { baseUrlInput = it },
-                    placeholder = { Text("e.g. http://192.168.1.50:32400", color = Color.White.copy(alpha = 0.4f)) },
+                    placeholder = { Text("e.g. http://192.168.1.50:32400", color = placeholderColor) },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF6366F1).copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.05f),
-                        focusedContainerColor = Color.Black.copy(alpha = 0.4f),
-                        unfocusedContainerColor = Color.Black.copy(alpha = 0.4f)
+                        focusedTextColor = inputFocusedText,
+                        unfocusedTextColor = inputUnfocusedText,
+                        focusedBorderColor = inputFocusedBorder,
+                        unfocusedBorderColor = inputUnfocusedBorder,
+                        focusedContainerColor = inputFocusedContainer,
+                        unfocusedContainerColor = inputUnfocusedContainer
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -227,14 +243,14 @@ fun SettingsScreen(
                     text = "X-Plex-Token Access Key",
                     style = MaterialTheme.typography.bodyMedium.copy(
                         fontWeight = FontWeight.Bold,
-                        color = Color.White.copy(alpha = 0.8f)
+                        color = subLabelColor
                     ),
                     modifier = Modifier.padding(bottom = 6.dp)
                 )
                 OutlinedTextField(
                     value = tokenInput,
                     onValueChange = { tokenInput = it },
-                    placeholder = { Text("Enter your secret Plex Token", color = Color.White.copy(alpha = 0.4f)) },
+                    placeholder = { Text("Enter your secret Plex Token", color = placeholderColor) },
                     singleLine = true,
                     visualTransformation = if (hideToken) PasswordVisualTransformation() else VisualTransformation.None,
                     trailingIcon = {
@@ -242,17 +258,17 @@ fun SettingsScreen(
                             Icon(
                                 imageVector = if (hideToken) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
                                 contentDescription = "Toggle token visibility",
-                                tint = Color.White.copy(alpha = 0.5f)
+                                tint = labelColor.copy(alpha = 0.5f)
                             )
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF6366F1).copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.05f),
-                        focusedContainerColor = Color.Black.copy(alpha = 0.4f),
-                        unfocusedContainerColor = Color.Black.copy(alpha = 0.4f)
+                        focusedTextColor = inputFocusedText,
+                        unfocusedTextColor = inputUnfocusedText,
+                        focusedBorderColor = inputFocusedBorder,
+                        unfocusedBorderColor = inputUnfocusedBorder,
+                        focusedContainerColor = inputFocusedContainer,
+                        unfocusedContainerColor = inputUnfocusedContainer
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -261,10 +277,39 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(16.dp)
                 )
 
+                // Lyrics Directory Input
+                Text(
+                    text = "Local Lyrics Directory Path (Optional)",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = subLabelColor
+                    ),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+                OutlinedTextField(
+                    value = lyricsDirInput,
+                    onValueChange = { lyricsDirInput = it },
+                    placeholder = { Text("e.g. /storage/emulated/0/Music/Lyrics", color = placeholderColor) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = inputFocusedText,
+                        unfocusedTextColor = inputUnfocusedText,
+                        focusedBorderColor = inputFocusedBorder,
+                        unfocusedBorderColor = inputUnfocusedBorder,
+                        focusedContainerColor = inputFocusedContainer,
+                        unfocusedContainerColor = inputUnfocusedContainer
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                        .testTag("lyrics_directory_input"),
+                    shape = RoundedCornerShape(16.dp)
+                )
+
                 // Save Action
                 Button(
                     onClick = {
-                        viewModel.saveCredentials(baseUrlInput, tokenInput)
+                        viewModel.saveCredentials(baseUrlInput, tokenInput, lyricsDirInput)
                     },
                     enabled = baseUrlInput.isNotBlank() && tokenInput.isNotBlank() && !isLoading,
                     colors = ButtonDefaults.buttonColors(
@@ -518,14 +563,13 @@ fun SettingsScreen(
             }
 
             // Visual Customization: Color Themes
-            val activeTheme by viewModel.activeThemeFlow.collectAsStateWithLifecycle()
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 24.dp),
                 shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                colors = CardDefaults.cardColors(containerColor = if (activeTheme == "Warm Light") MaterialTheme.colorScheme.surface else Color.White.copy(alpha = 0.05f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, if (activeTheme == "Warm Light") MaterialTheme.colorScheme.outline.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.10f)),
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -533,46 +577,105 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Rounded.Palette,
                             contentDescription = "Visual Customization",
-                            tint = Color(0xFF818CF8)
+                            tint = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "Custom Theme Options",
+                            text = "App Color Theme",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = if (activeTheme == "Warm Light") MaterialTheme.colorScheme.onSurface else Color.White
                             )
                         )
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    val themesList = listOf("Default Dark", "Emerald Aurora", "Cyberpunk Neon", "Sunset Glow", "Cosmic Obsidian")
-                    themesList.forEach { themeName ->
-                        val isSelected = themeName == activeTheme
+                    var expanded by remember { mutableStateOf(false) }
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (isSelected) Color(0xFF6366F1).copy(alpha = 0.15f) else Color.Transparent)
-                                .clickable { viewModel.updateTheme(themeName) }
-                                .padding(12.dp),
+                                .background(if (activeTheme == "Warm Light") MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.08f))
+                                .clickable { expanded = true }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(
-                                text = themeName,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (isSelected) Color(0xFF818CF8) else Color.White
+                            Column {
+                                Text(
+                                    "Active Theme",
+                                    fontSize = 11.sp,
+                                    color = (if (activeTheme == "Warm Light") MaterialTheme.colorScheme.onSurface else Color.White).copy(alpha = 0.6f)
                                 )
+                                Text(
+                                    text = activeTheme.ifEmpty { "Default Dark" },
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (activeTheme == "Warm Light") MaterialTheme.colorScheme.onSurface else Color.White
+                                )
+                            }
+                            Icon(
+                                imageVector = if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "Choose theme",
+                                tint = if (activeTheme == "Warm Light") MaterialTheme.colorScheme.primary else Color.White
                             )
-                            RadioButton(
-                                selected = isSelected,
-                                onClick = { viewModel.updateTheme(themeName) },
-                                colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF818CF8))
+                        }
+
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                            modifier = Modifier
+                                .fillMaxWidth(0.9f)
+                                .background(if (activeTheme == "Warm Light") MaterialTheme.colorScheme.surface else Color(0xFF1E1E2E))
+                        ) {
+                            val themesList = listOf(
+                                "Default Dark",
+                                "Emerald Aurora",
+                                "Cyberpunk Neon",
+                                "Sunset Glow",
+                                "Cosmic Obsidian",
+                                "Midnight Blue",
+                                "Deep Amber",
+                                "Rose Gold",
+                                "Matrix Green",
+                                "Nordic Frost",
+                                "Solarized Dark",
+                                "Warm Light"
                             )
+                            themesList.forEach { themeName ->
+                                val isSelected = themeName == activeTheme
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = themeName,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else if (activeTheme == "Warm Light") MaterialTheme.colorScheme.onSurface else Color.White
+                                        )
+                                    },
+                                    onClick = {
+                                        viewModel.updateTheme(themeName)
+                                        expanded = false
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Palette,
+                                            contentDescription = null,
+                                            tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.4f),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.background(
+                                        if (isSelected) {
+                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                                        } else {
+                                            Color.Transparent
+                                        }
+                                    )
+                                )
+                            }
                         }
                     }
                 }
@@ -701,6 +804,82 @@ fun SettingsScreen(
 
             // AI Modes Selection Card
             val activeAiProvider by viewModel.aiProviderFlow.collectAsStateWithLifecycle()
+            val ggufModelSize by viewModel.ggufModelSizeFlow.collectAsStateWithLifecycle()
+            
+            // NEW: Background Sync Card
+            val syncInterval by viewModel.syncIntervalHoursFlow.collectAsStateWithLifecycle()
+            
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.05f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Rounded.Sync,
+                            contentDescription = "Background Sync",
+                            tint = Color(0xFF818CF8)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Background Sync",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Automatically check for new music at periodic intervals, even when the app is closed:",
+                        color = Color.White.copy(alpha = 0.6f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val intervals = listOf(0L, 1L, 6L, 12L, 24L)
+                    intervals.forEach { hours ->
+                        val isSelected = hours == syncInterval
+                        val label = when (hours) {
+                            0L -> "Disabled"
+                            1L -> "Every 1 hour"
+                            else -> "Every $hours hours"
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isSelected) Color(0xFF6366F1).copy(alpha = 0.15f) else Color.Transparent)
+                                .clickable { viewModel.updateSyncInterval(hours) }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) Color(0xFF818CF8) else Color.White
+                                )
+                            )
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = { viewModel.updateSyncInterval(hours) },
+                                colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF818CF8))
+                            )
+                        }
+                    }
+                }
+            }
+
             var modelPathInput by remember { mutableStateOf(viewModel.repository.settings.aiModelPath) }
             Card(
                 modifier = Modifier
@@ -833,6 +1012,72 @@ fun SettingsScreen(
                             selected = activeAiProvider == "NoAIProvider",
                             onClick = { viewModel.updateAiProvider("NoAIProvider") },
                             colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF818CF8))
+                        )
+                    }
+
+                    // Mode 5: Local GGUF LLM (llama.cpp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (activeAiProvider == "LlamaCppAIProvider") Color(0xFF6366F1).copy(alpha = 0.15f) else Color.Transparent)
+                            .clickable { viewModel.updateAiProvider("LlamaCppAIProvider") }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Mode 5: Local GGUF LLM (llama.cpp)", color = if (activeAiProvider == "LlamaCppAIProvider") Color(0xFF818CF8) else Color.White, fontWeight = FontWeight.Bold)
+                            Text("Run private, offline LLMs on-device via native llama.cpp bindings.", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp)
+                        }
+                        RadioButton(
+                            selected = activeAiProvider == "LlamaCppAIProvider",
+                            onClick = { viewModel.updateAiProvider("LlamaCppAIProvider") },
+                            colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF818CF8))
+                        )
+                    }
+
+                    if (activeAiProvider == "LlamaCppAIProvider") {
+                        Spacer(Modifier.height(10.dp))
+                        Text("Model Parameter Size Selection", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Select a model target profile suitable for your device's memory capacity:", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.padding(bottom = 6.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val sizes = listOf("1.5B", "2B", "4B", "Custom")
+                            sizes.forEach { size ->
+                                val isSizeSelected = size == ggufModelSize
+                                AssistChip(
+                                    onClick = { viewModel.updateGgufModelSize(size) },
+                                    label = { Text(size, fontSize = 11.sp) },
+                                    colors = AssistChipDefaults.assistChipColors(
+                                        containerColor = if (isSizeSelected) Color(0xFF6366F1).copy(alpha = 0.2f) else Color.Transparent,
+                                        labelColor = if (isSizeSelected) Color(0xFF818CF8) else Color.White
+                                    )
+                                )
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = modelPathInput,
+                            onValueChange = { modelPathInput = it; viewModel.repository.settings.aiModelPath = it },
+                            label = { Text("Local GGUF model path") },
+                            placeholder = { Text("e.g. /storage/emulated/0/Download/gemma-3-4b.gguf") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color(0xFF6366F1), unfocusedBorderColor = Color.White.copy(alpha = 0.1f)),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        val isBridgeLoaded = com.example.data.LlamaCppBridge.isNativeLibraryLoaded()
+                        Text(
+                            text = if (isBridgeLoaded) "✓ llama.cpp JNI bindings successfully loaded." else "ℹ llama.cpp JNI bindings not loaded in this dev build. Falling back dynamically to secure rules-based parser on-device.",
+                            color = if (isBridgeLoaded) Color(0xFF34D399) else Color(0xFFFBBF24),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(bottom = 12.dp)
                         )
                     }
                 }

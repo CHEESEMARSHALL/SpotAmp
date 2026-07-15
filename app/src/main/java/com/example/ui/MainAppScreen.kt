@@ -32,6 +32,14 @@ sealed class Screen {
     data class ArtistDetail(val id: String, val name: String) : Screen()
     data class AlbumDetail(val id: String, val name: String) : Screen()
     data class PlaylistDetail(val id: Int, val name: String) : Screen()
+    data class CustomPlaylistDetail(
+        val type: String,
+        val id: String,
+        val title: String,
+        val description: String,
+        val seedTracks: List<com.example.playback.TrackItem>,
+        val colors: List<Long> = emptyList()
+    ) : Screen()
 }
 
 @Composable
@@ -55,7 +63,7 @@ fun MainAppScreen(
 
     fun navigateBack() {
         if (navigationStack.size > 1) {
-            navigationStack.removeLast()
+            navigationStack.removeAt(navigationStack.lastIndex)
         }
     }
 
@@ -218,108 +226,118 @@ fun MainAppScreen(
             Scaffold(
                 bottomBar = {
                     if (!isWideScreen) {
-                        val surfaceColor = MaterialTheme.colorScheme.surface
-                        val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-                        val outlineVariantColor = MaterialTheme.colorScheme.outlineVariant
+                        Column {
+                            if (currentTrack != null) {
+                                BottomMiniPlayer(
+                                    playbackManager = viewModel.playbackManager,
+                                    baseUrl = baseUrl,
+                                    token = token,
+                                    onExpand = { isNowPlayingExpanded = true }
+                                )
+                            }
+                            
+                            val surfaceColor = MaterialTheme.colorScheme.surface
+                            val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+                            val outlineVariantColor = MaterialTheme.colorScheme.outlineVariant
 
-                        NavigationBar(
-                            containerColor = surfaceColor.copy(alpha = 0.9f),
-                            contentColor = onSurfaceColor,
-                            modifier = Modifier
-                                .navigationBarsPadding()
-                                .drawBehind {
-                                    drawLine(
-                                        color = outlineVariantColor.copy(alpha = 0.5f),
-                                        start = Offset(0f, 0f),
-                                        end = Offset(size.width, 0f),
-                                        strokeWidth = 1.dp.toPx()
+                            NavigationBar(
+                                containerColor = surfaceColor.copy(alpha = 0.9f),
+                                contentColor = onSurfaceColor,
+                                modifier = Modifier
+                                    .drawBehind {
+                                        drawLine(
+                                            color = outlineVariantColor.copy(alpha = 0.5f),
+                                            start = Offset(0f, 0f),
+                                            end = Offset(size.width, 0f),
+                                            strokeWidth = 1.dp.toPx()
+                                        )
+                                    }
+                            ) {
+                                NavigationBarItem(
+                                    selected = currentScreen is Screen.Home,
+                                    onClick = { 
+                                        navigationStack.clear()
+                                        navigationStack.add(Screen.Home)
+                                    },
+                                    icon = { Icon(Icons.Rounded.Home, contentDescription = "Home") },
+                                    label = { Text("Home", fontSize = 11.sp) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Color(0xFF818CF8),
+                                        selectedTextColor = Color(0xFF818CF8),
+                                        unselectedIconColor = Color(0xFF64748B),
+                                        unselectedTextColor = Color(0xFF64748B),
+                                        indicatorColor = Color.Transparent
                                     )
-                                }
-                        ) {
-                            NavigationBarItem(
-                                selected = currentScreen is Screen.Home,
-                                onClick = { 
-                                    navigationStack.clear()
-                                    navigationStack.add(Screen.Home)
-                                },
-                                icon = { Icon(Icons.Rounded.Home, contentDescription = "Home") },
-                                label = { Text("Home", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF818CF8),
-                                    selectedTextColor = Color(0xFF818CF8),
-                                    unselectedIconColor = Color(0xFF64748B),
-                                    unselectedTextColor = Color(0xFF64748B),
-                                    indicatorColor = Color.Transparent
                                 )
-                            )
 
-                            NavigationBarItem(
-                                selected = currentScreen is Screen.Library || currentScreen is Screen.ArtistDetail || currentScreen is Screen.AlbumDetail || currentScreen is Screen.PlaylistDetail,
-                                onClick = {
-                                    navigationStack.clear()
-                                    navigationStack.add(Screen.Library)
-                                },
-                                icon = { Icon(Icons.Rounded.LibraryMusic, contentDescription = "Library") },
-                                label = { Text("Library", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF818CF8),
-                                    selectedTextColor = Color(0xFF818CF8),
-                                    unselectedIconColor = Color(0xFF64748B),
-                                    unselectedTextColor = Color(0xFF64748B),
-                                    indicatorColor = Color.Transparent
+                                NavigationBarItem(
+                                    selected = currentScreen is Screen.Library || currentScreen is Screen.ArtistDetail || currentScreen is Screen.AlbumDetail || currentScreen is Screen.PlaylistDetail,
+                                    onClick = {
+                                        navigationStack.clear()
+                                        navigationStack.add(Screen.Library)
+                                    },
+                                    icon = { Icon(Icons.Rounded.LibraryMusic, contentDescription = "Library") },
+                                    label = { Text("Library", fontSize = 11.sp) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Color(0xFF818CF8),
+                                        selectedTextColor = Color(0xFF818CF8),
+                                        unselectedIconColor = Color(0xFF64748B),
+                                        unselectedTextColor = Color(0xFF64748B),
+                                        indicatorColor = Color.Transparent
+                                    )
                                 )
-                            )
 
-                            NavigationBarItem(
-                                selected = currentScreen is Screen.Search,
-                                onClick = {
-                                    navigationStack.clear()
-                                    navigationStack.add(Screen.Search)
-                                },
-                                icon = { Icon(Icons.Rounded.Search, contentDescription = "Search") },
-                                label = { Text("Search", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF818CF8),
-                                    selectedTextColor = Color(0xFF818CF8),
-                                    unselectedIconColor = Color(0xFF64748B),
-                                    unselectedTextColor = Color(0xFF64748B),
-                                    indicatorColor = Color.Transparent
+                                NavigationBarItem(
+                                    selected = currentScreen is Screen.Search,
+                                    onClick = {
+                                        navigationStack.clear()
+                                        navigationStack.add(Screen.Search)
+                                    },
+                                    icon = { Icon(Icons.Rounded.Search, contentDescription = "Search") },
+                                    label = { Text("Search", fontSize = 11.sp) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Color(0xFF818CF8),
+                                        selectedTextColor = Color(0xFF818CF8),
+                                        unselectedIconColor = Color(0xFF64748B),
+                                        unselectedTextColor = Color(0xFF64748B),
+                                        indicatorColor = Color.Transparent
+                                    )
                                 )
-                            )
 
-                            NavigationBarItem(
-                                selected = currentScreen is Screen.Downloads,
-                                onClick = {
-                                    navigationStack.clear()
-                                    navigationStack.add(Screen.Downloads)
-                                },
-                                icon = { Icon(Icons.Rounded.Download, contentDescription = "Downloads") },
-                                label = { Text("Downloads", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF818CF8),
-                                    selectedTextColor = Color(0xFF818CF8),
-                                    unselectedIconColor = Color(0xFF64748B),
-                                    unselectedTextColor = Color(0xFF64748B),
-                                    indicatorColor = Color.Transparent
+                                NavigationBarItem(
+                                    selected = currentScreen is Screen.Downloads,
+                                    onClick = {
+                                        navigationStack.clear()
+                                        navigationStack.add(Screen.Downloads)
+                                    },
+                                    icon = { Icon(Icons.Rounded.Download, contentDescription = "Downloads") },
+                                    label = { Text("Downloads", fontSize = 11.sp) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Color(0xFF818CF8),
+                                        selectedTextColor = Color(0xFF818CF8),
+                                        unselectedIconColor = Color(0xFF64748B),
+                                        unselectedTextColor = Color(0xFF64748B),
+                                        indicatorColor = Color.Transparent
+                                    )
                                 )
-                            )
 
-                            NavigationBarItem(
-                                selected = currentScreen is Screen.Settings,
-                                onClick = {
-                                    navigationStack.clear()
-                                    navigationStack.add(Screen.Settings)
-                                },
-                                icon = { Icon(Icons.Rounded.Settings, contentDescription = "Settings") },
-                                label = { Text("Settings", fontSize = 11.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF818CF8),
-                                    selectedTextColor = Color(0xFF818CF8),
-                                    unselectedIconColor = Color(0xFF64748B),
-                                    unselectedTextColor = Color(0xFF64748B),
-                                    indicatorColor = Color.Transparent
+                                NavigationBarItem(
+                                    selected = currentScreen is Screen.Settings,
+                                    onClick = {
+                                        navigationStack.clear()
+                                        navigationStack.add(Screen.Settings)
+                                    },
+                                    icon = { Icon(Icons.Rounded.Settings, contentDescription = "Settings") },
+                                    label = { Text("Settings", fontSize = 11.sp) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = Color(0xFF818CF8),
+                                        selectedTextColor = Color(0xFF818CF8),
+                                        unselectedIconColor = Color(0xFF64748B),
+                                        unselectedTextColor = Color(0xFF64748B),
+                                        indicatorColor = Color.Transparent
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 },
@@ -332,19 +350,25 @@ fun MainAppScreen(
                         .padding(innerPadding)
                 ) {
                     // Content Layer with Crossfade Animations
-                    Box(modifier = Modifier.fillMaxSize().padding(bottom = if (currentTrack != null) 64.dp else 0.dp)) {
+                    Box(modifier = Modifier.fillMaxSize()) {
                         when (currentScreen) {
                             is Screen.Home -> HomeScreen(
                                 viewModel = viewModel,
                                 onNavigateToSettings = { navigateTo(Screen.Settings) },
                                 onNavigateToArtist = { id, name -> navigateTo(Screen.ArtistDetail(id, name)) },
-                                onNavigateToAlbum = { id, name -> navigateTo(Screen.AlbumDetail(id, name)) }
+                                onNavigateToAlbum = { id, name -> navigateTo(Screen.AlbumDetail(id, name)) },
+                                onNavigateToCustomPlaylist = { type, id, title, desc, tracks, colors ->
+                                    navigateTo(Screen.CustomPlaylistDetail(type, id, title, desc, tracks, colors))
+                                }
                             )
                             is Screen.Library -> LibraryScreen(
                                 viewModel = viewModel,
                                 onNavigateToArtist = { id, name -> navigateTo(Screen.ArtistDetail(id, name)) },
                                 onNavigateToAlbum = { id, name -> navigateTo(Screen.AlbumDetail(id, name)) },
-                                onNavigateToPlaylist = { id, name -> navigateTo(Screen.PlaylistDetail(id, name)) }
+                                onNavigateToPlaylist = { id, name -> navigateTo(Screen.PlaylistDetail(id, name)) },
+                                onNavigateToCustomPlaylist = { type, id, title, desc, tracks, colors ->
+                                    navigateTo(Screen.CustomPlaylistDetail(type, id, title, desc, tracks, colors))
+                                }
                             )
                             is Screen.Search -> SearchScreen(
                                 viewModel = viewModel,
@@ -378,23 +402,19 @@ fun MainAppScreen(
                                 viewModel = viewModel,
                                 onBack = { navigateBack() }
                             )
+                            is Screen.CustomPlaylistDetail -> CustomPlaylistDetailScreen(
+                                type = currentScreen.type,
+                                playlistId = currentScreen.id,
+                                playlistName = currentScreen.title,
+                                description = currentScreen.description,
+                                tracks = currentScreen.seedTracks,
+                                colors = currentScreen.colors,
+                                viewModel = viewModel,
+                                onBack = { navigateBack() }
+                            )
                         }
                     }
 
-                    // Floating Bottom Mini Player
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                    ) {
-                        BottomMiniPlayer(
-                            playbackManager = viewModel.playbackManager,
-                            baseUrl = baseUrl,
-                            token = token,
-                            onExpand = { isNowPlayingExpanded = true }
-                        )
-                    }
                 }
             }
         }

@@ -362,6 +362,106 @@ class LocalAIProvider : AIProvider {
     }
 }
 
+// ==============================================================
+// 2b. Native llama.cpp / GGUF Local LLM Bindings Bridge
+// ==============================================================
+object LlamaCppBridge {
+    private var isLoaded = false
+    private var loadError: String? = null
+
+    init {
+        try {
+            System.loadLibrary("llama-android")
+            isLoaded = true
+        } catch (e: UnsatisfiedLinkError) {
+            loadError = e.message
+            isLoaded = false
+        } catch (e: Exception) {
+            loadError = e.message
+            isLoaded = false
+        }
+    }
+
+    fun isNativeLibraryLoaded(): Boolean = isLoaded
+    fun getLoadError(): String? = loadError
+
+    // Native functions mirroring llama.cpp's standard simple interface
+    external fun initModel(modelPath: String, contextSize: Int, temp: Float): Long
+    external fun generate(modelPtr: Long, prompt: String, systemPrompt: String, maxTokens: Int, temp: Float): String
+    external fun freeModel(modelPtr: Long)
+}
+
+class LlamaCppAIProvider(
+    private val modelPath: String,
+    private val contextSize: Int = 2048,
+    private val temperature: Float = 0.7f,
+    private val modelPresetSize: String = "2B" // e.g. "1.5B", "2B", "4B"
+) : AIProvider {
+    override val name = "Local GGUF via llama.cpp ($modelPresetSize)"
+
+    override suspend fun generatePlaylistIntent(prompt: String, cachedTracks: List<CachedTrack>): PlaylistIntent = withContext(Dispatchers.Default) {
+        Log.d("LlamaCppAIProvider", "Invoking local GGUF LLM at $modelPath (Profile: $modelPresetSize)")
+        
+        if (modelPath.isBlank()) {
+            val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+            return@withContext fallbackIntent.copy(
+                explanation = "GGUF model path not configured in Settings. [Fallback to local rules engine] " + (fallbackIntent.explanation ?: "")
+            )
+        }
+
+        if (!LlamaCppBridge.isNativeLibraryLoaded()) {
+            val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+            val errMsg = LlamaCppBridge.getLoadError() ?: "libllama-android.so library not loaded"
+            return@withContext fallbackIntent.copy(
+                explanation = "llama.cpp JNI bindings (.so) not compiled for this architecture. Running offline rules engine fallback.\n" +
+                        "Model config: $modelPresetSize at $modelPath\n" +
+                        "Status: $errMsg\n\n" + (fallbackIntent.explanation ?: "")
+            )
+        }
+
+        try {
+            val availableArtists = cachedTracks.map { it.artist }.distinct().take(100).joinToString(", ")
+            val systemPrompt = """
+                You are a Sonic Sage AI music interpreter. You translate natural language user queries into a structured playlist intent JSON object.
+                You must analyze the user prompt and extract seeds, genres, and styles. Only output RAW JSON according to this schema:
+                {
+                  "seedArtists": ["ArtistName"],
+                  "seedAlbums": ["AlbumName"],
+                  "genres": ["metalcore", "soundtrack"],
+                  "moods": ["dark", "energetic"],
+                  "energyLevel": "high"
+                }
+                Artists Sample: $availableArtists
+            """.trimIndent()
+
+            val modelPtr = LlamaCppBridge.initModel(modelPath, contextSize, temperature)
+            if (modelPtr == 0L) {
+                throw IllegalStateException("Failed to load GGUF model at $modelPath")
+            }
+
+            val jsonText = try {
+                LlamaCppBridge.generate(modelPtr, prompt, systemPrompt, maxTokens = 512, temp = temperature)
+            } finally {
+                LlamaCppBridge.freeModel(modelPtr)
+            }
+
+            Log.d("LlamaCppAIProvider", "Received native GGUF response: $jsonText")
+
+            val json = Json { 
+                ignoreUnknownKeys = true
+                coerceInputValues = true
+            }
+            json.decodeFromString<PlaylistIntent>(jsonText)
+        } catch (e: Exception) {
+            Log.e("LlamaCppAIProvider", "Error in native GGUF generation", e)
+            val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+            fallbackIntent.copy(
+                explanation = "Failed to run GGUF model ($modelPresetSize) at path '$modelPath': ${e.localizedMessage}. [Fell back to local rules engine]\n\n" + (fallbackIntent.explanation ?: "")
+            )
+        }
+    }
+}
+
 class NoAIProvider : AIProvider {
     override val name = "No AI (Pure Algorithms)"
 
@@ -506,7 +606,7 @@ class RecommendationEngine(private val context: Context) {
             }
         }
 
-        finalSelection.map { track ->
+        finalSelection.shuffled().map { track ->
             TrackItem(
                 ratingKey = track.ratingKey,
                 title = track.title,

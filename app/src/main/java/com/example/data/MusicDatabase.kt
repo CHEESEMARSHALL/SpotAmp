@@ -6,6 +6,16 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
+@Entity(tableName = "sync_state")
+data class SyncStateEntity(
+    @PrimaryKey val sectionId: String,
+    val currentOffset: Int = 0,
+    val totalTracks: Int = 0,
+    val lastSyncId: Long = 0,
+    val status: String = "idle",
+    val lastError: String? = null
+)
+
 @Entity(tableName = "cached_tracks")
 data class CachedTrack(
     @PrimaryKey val ratingKey: String,
@@ -20,7 +30,8 @@ data class CachedTrack(
     val playCount: Int = 0,
     val lastPlayedAt: Long? = null,
     val genres: String = "",
-    val collections: String = ""
+    val collections: String = "",
+    val syncId: Long = 0 // Track which sync indexed this
 )
 
 @Entity(tableName = "recently_played")
@@ -124,8 +135,18 @@ interface MusicDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCachedTracks(tracks: List<CachedTrack>)
 
-    @Query("DELETE FROM cached_tracks")
-    suspend fun clearCachedTracks()
+    // Sync State
+    @Query("SELECT * FROM sync_state WHERE sectionId = :sectionId")
+    fun getSyncStateFlow(sectionId: String): Flow<SyncStateEntity?>
+
+    @Query("SELECT * FROM sync_state WHERE sectionId = :sectionId")
+    suspend fun getSyncState(sectionId: String): SyncStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSyncState(state: SyncStateEntity)
+
+    @Query("DELETE FROM cached_tracks WHERE syncId != :syncId")
+    suspend fun deleteStaleTracks(syncId: Long)
 
     @Query("SELECT COUNT(*) FROM cached_tracks")
     suspend fun getCachedTracksCount(): Int
@@ -231,9 +252,10 @@ interface MusicDao {
         DownloadedTrackEntity::class,
         LikedTrackEntity::class,
         PlaybackStateEntity::class,
-        ListeningHistoryEntity::class
+        ListeningHistoryEntity::class,
+        SyncStateEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {

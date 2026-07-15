@@ -52,12 +52,14 @@ class MusicPlaybackService : Service() {
 
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isServiceRunning) {
+            isServiceRunning = true
+            startInitialForeground()
+        }
         intent?.action?.let { action ->
             when (action) {
                 ACTION_START -> {
-                    if (!isServiceRunning) {
-                        isServiceRunning = true
-                    }
+                    // Handled by the check above
                 }
                 ACTION_PLAY -> playbackManager.play()
                 ACTION_PAUSE -> playbackManager.pause()
@@ -75,6 +77,31 @@ class MusicPlaybackService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun startInitialForeground() {
+        val notificationBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        val notification = notificationBuilder
+            .setContentTitle("Plex Music Player")
+            .setContentText("Preparing playback...")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setOngoing(true)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun createNotificationChannel() {

@@ -32,6 +32,7 @@ fun List<PlexDirectory>.musicLibraries(): List<PlexDirectory> = filter {
 
 @JsonClass(generateAdapter = true)
 data class PlexMetadataContainer(
+    @Json(name = "totalSize") val totalSize: Int? = null,
     @Json(name = "Metadata") val metadata: List<PlexMetadata>? = null
 )
 
@@ -66,7 +67,18 @@ data class PlexMedia(
 
 @JsonClass(generateAdapter = true)
 data class PlexPart(
-    @Json(name = "key") val key: String? = null
+    @Json(name = "key") val key: String? = null,
+    @Json(name = "Stream") val streams: List<PlexStream>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class PlexStream(
+    @Json(name = "id") val id: String? = null,
+    @Json(name = "streamType") val streamType: Int? = null,
+    @Json(name = "key") val key: String? = null,
+    @Json(name = "codec") val codec: String? = null,
+    @Json(name = "format") val format: String? = null,
+    @Json(name = "selected") val selected: Boolean? = null
 )
 
 interface PlexApiService {
@@ -80,8 +92,8 @@ interface PlexApiService {
     suspend fun getLibraryItems(
         @Path("sectionId") sectionId: String,
         @Query("type") type: String, // "8" for artists, "9" for albums, "10" for tracks
-        @Query("offset") offset: Int = 0,
-        @Query("limit") limit: Int = 200,
+        @Query("X-Plex-Container-Start") offset: Int = 0,
+        @Query("X-Plex-Container-Size") limit: Int = 200,
         @Header("X-Plex-Token") token: String,
         @Header("Accept") accept: String = "application/json"
     ): PlexEnvelope<PlexMetadataContainer>

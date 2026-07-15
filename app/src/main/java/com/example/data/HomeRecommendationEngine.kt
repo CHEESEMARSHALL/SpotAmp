@@ -244,7 +244,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val topArtist1 = artistGroups.getOrNull(0)
         val topArtist2 = artistGroups.getOrNull(1)
         if (topArtist1 != null) {
-            val tracks = (topArtist1.second + (topArtist2?.second ?: emptyList())).sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() }
+            val tracks = (topArtist1.second + (topArtist2?.second ?: emptyList())).shuffled().take(30).map { it.toTrackItem() }
             val reasonText = topArtist1.first + (topArtist2?.let { ", " + it.first } ?: "")
             mixes.add(
                 DailyMix(
@@ -261,7 +261,7 @@ class HomeRecommendationEngine(private val context: Context) {
         val secondaryArtist = artistGroups.getOrNull(2)
         val thirdArtist = artistGroups.getOrNull(3)
         if (secondaryArtist != null) {
-            val tracks = (secondaryArtist.second + (thirdArtist?.second ?: emptyList())).sortedBy { it.ratingKey }.take(30).map { it.toTrackItem() }
+            val tracks = (secondaryArtist.second + (thirdArtist?.second ?: emptyList())).shuffled().take(30).map { it.toTrackItem() }
             val reasonText = secondaryArtist.first + (thirdArtist?.let { ", " + it.first } ?: "")
             mixes.add(
                 DailyMix(
@@ -275,7 +275,7 @@ class HomeRecommendationEngine(private val context: Context) {
         }
 
         // Daily Mix 03: Diverse eclectic mix from remaining library
-        val remainingTracks = cachedTracks.sortedBy { it.ratingKey }.take(40).map { it.toTrackItem() }
+        val remainingTracks = cachedTracks.shuffled().take(40).map { it.toTrackItem() }
         if (remainingTracks.isNotEmpty()) {
             mixes.add(
                 DailyMix(
@@ -293,11 +293,8 @@ class HomeRecommendationEngine(private val context: Context) {
         // actually supplied that signal, and never use fabricated tracks.
         while (mixes.size < 5) {
             val idx = mixes.size + 1
-            val ordered = cachedTracks.sortedBy { it.ratingKey }
-            val fallbackTracks = ordered
-                .drop((idx - 1) * 30)
+            val fallbackTracks = cachedTracks.shuffled()
                 .take(30)
-                .ifEmpty { ordered.take(30) }
                 .map { it.toTrackItem() }
             if (fallbackTracks.isEmpty()) break
             val artists = fallbackTracks.map { it.artist }.distinct().take(3)

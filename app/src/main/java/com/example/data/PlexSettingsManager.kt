@@ -31,6 +31,8 @@ class PlexSettingsManager(context: Context) {
         private const val KEY_OFFLINE_ONLY = "offline_only"
         private const val KEY_AI_MODEL_PATH = "ai_model_path"
         private const val KEY_AI_TIMEOUT = "ai_timeout_ms"
+        private const val KEY_SYNC_INTERVAL = "sync_interval_hours"
+        private const val KEY_GGUF_MODEL_SIZE = "gguf_model_size"
     }
 
     init {
@@ -103,6 +105,14 @@ class PlexSettingsManager(context: Context) {
         get() = prefs.getLong(KEY_AI_TIMEOUT, 15_000L)
         set(value) = prefs.edit().putLong(KEY_AI_TIMEOUT, value).apply()
 
+    var syncIntervalHours: Long
+        get() = prefs.getLong(KEY_SYNC_INTERVAL, 0L) // 0 means disabled
+        set(value) = prefs.edit().putLong(KEY_SYNC_INTERVAL, value).apply()
+
+    var ggufModelSize: String
+        get() = prefs.getString(KEY_GGUF_MODEL_SIZE, "2B") ?: "2B"
+        set(value) = prefs.edit().putString(KEY_GGUF_MODEL_SIZE, value).apply()
+
     var baseUrl: String
         get() {
             val saved = prefs.getString(KEY_BASE_URL, "") ?: ""
@@ -130,6 +140,10 @@ class PlexSettingsManager(context: Context) {
     var libraryName: String
         get() = prefs.getString(KEY_LIBRARY_NAME, "") ?: ""
         set(value) = prefs.edit().putString(KEY_LIBRARY_NAME, value).apply()
+
+    var lyricsDirectory: String
+        get() = prefs.getString("lyrics_directory", "") ?: ""
+        set(value) = prefs.edit().putString("lyrics_directory", value).apply()
 
     val isConfigured: Boolean
         get() = baseUrl.isNotEmpty() && token.isNotEmpty()

@@ -54,128 +54,122 @@ fun BottomMiniPlayer(
         if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
     }
 
-    Card(
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .background(Color.Black)
             .clickable { onExpand() }
-            .testTag("mini_player"),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.06f)),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            .testTag("mini_player")
     ) {
-        Column {
-            // Tiny Top Timeline Progress Line
-            if (duration > 0) {
+        // Tiny Top Timeline Progress Line
+        if (duration > 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(Color.White.copy(alpha = 0.1f))
+            ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(Color.White.copy(alpha = 0.05f))
-                ) {
+                        .fillMaxWidth(fraction = (progress.toFloat() / duration).coerceIn(0f, 1f))
+                        .fillMaxHeight()
+                        .background(Color(0xFF818CF8))
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Little album cover art
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(4.dp))
+            ) {
+                if (imageUrl != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(imageUrl)
+                            .addHeader("X-Plex-Token", token)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = currentTrack?.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(fraction = (progress.toFloat() / duration).coerceIn(0f, 1f))
-                            .fillMaxHeight()
-                            .background(Color(0xFF818CF8))
-                    )
+                            .fillMaxSize()
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MusicNote,
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.4f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
-            Row(
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Title and Artist
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = currentTrack?.title ?: "",
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 14.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = currentTrack?.artist ?: "",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 12.sp
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Controls: Quick play/pause or buffer spinner
+            IconButton(
+                onClick = { playbackManager.togglePlayPause() },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .testTag("mini_player_play_pause")
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = if (isPlaying) "Pause" else "Play"
+                    }
             ) {
-                // Little album cover art
-                Card(
-                    modifier = Modifier.size(44.dp),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    if (imageUrl != null) {
-                        AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(imageUrl)
-                        .addHeader("X-Plex-Token", token)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = currentTrack?.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(Color(0xFF6366F1), Color(0xFF8B5CF6))
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.MusicNote,
-                                contentDescription = null,
-                                tint = Color.White.copy(alpha = 0.4f),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
-
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                // Title and Artist
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = currentTrack?.title ?: "",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            fontSize = 14.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
                     )
-                    Text(
-                        text = currentTrack?.artist ?: "",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 12.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                } else {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
                     )
-                }
-
-                // Controls: Quick play/pause or buffer spinner
-                IconButton(
-                    onClick = { playbackManager.togglePlayPause() },
-                    modifier = Modifier
-                        .testTag("mini_player_play_pause")
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = if (isPlaying) "Pause" else "Play"
-                        }
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
                 }
             }
         }
