@@ -37,7 +37,9 @@ sealed class ContextMenuItem {
         val album: String,
         val key: String,
         val thumb: String,
-        val duration: Long
+        val duration: Long,
+        val albumRatingKey: String? = null,
+        val artistRatingKey: String? = null
     ) : ContextMenuItem() {
         fun toTrackItem() = TrackItem(
             ratingKey = ratingKey,
@@ -46,7 +48,9 @@ sealed class ContextMenuItem {
             album = album,
             key = key,
             thumb = thumb,
-            duration = duration
+            duration = duration,
+            albumRatingKey = albumRatingKey,
+            artistRatingKey = artistRatingKey
         )
     }
 
@@ -54,7 +58,8 @@ sealed class ContextMenuItem {
         val ratingKey: String,
         val title: String,
         val artist: String,
-        val thumb: String
+        val thumb: String,
+        val artistRatingKey: String? = null
     ) : ContextMenuItem()
 
     data class Artist(
@@ -396,7 +401,24 @@ fun MusicContextMenu(
                                 coroutineScope.launch {
                                     // Plex track details usually have parents, but to be simple and accurate, we find the track metadata
                                     // Since Plex track lists have parentRatingKey, let's navigate to the album
-                                    onNavigateToAlbum(item.ratingKey, item.album)
+                                    val albumId = item.albumRatingKey ?: viewModel.repository.searchPlex(item.album)
+                                        .firstOrNull { it.type.equals("album", ignoreCase = true) && it.title.equals(item.album, ignoreCase = true) }
+                                        ?.ratingKey
+                                    albumId?.let { onNavigateToAlbum(it, item.album) }
+                                    onDismiss()
+                                }
+                            }
+                        }
+                        item {
+                            ContextMenuOption(
+                                icon = Icons.Rounded.Person,
+                                label = "Go to artist"
+                            ) {
+                                coroutineScope.launch {
+                                    val artistId = item.artistRatingKey ?: viewModel.repository.searchPlex(item.artist)
+                                        .firstOrNull { it.type.equals("artist", ignoreCase = true) && it.title.equals(item.artist, ignoreCase = true) }
+                                        ?.ratingKey
+                                    artistId?.let { onNavigateToArtist(it, item.artist) }
                                     onDismiss()
                                 }
                             }
@@ -409,7 +431,7 @@ fun MusicContextMenu(
                                 label = "Go to artist"
                             ) {
                                 coroutineScope.launch {
-                                    onNavigateToArtist(item.ratingKey, item.artist)
+                                    item.artistRatingKey?.let { onNavigateToArtist(it, item.artist) }
                                     onDismiss()
                                 }
                             }

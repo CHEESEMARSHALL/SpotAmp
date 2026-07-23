@@ -99,12 +99,15 @@ fun ArtistDetailScreen(
     }
 
     // Popular tracks
-    val popularTracks = remember(currentArtistTracks) {
+    var showAllPopular by remember { mutableStateOf(false) }
+    val cachedTracks by viewModel.cachedTracks.collectAsStateWithLifecycle()
+    val playCounts = remember(cachedTracks) { cachedTracks.associate { it.ratingKey to it.playCount } }
+    val popularTracks = remember(currentArtistTracks, playCounts, showAllPopular) {
         currentArtistTracks
-            .sortedWith(compareByDescending<PlexMetadata> { it.viewCount ?: 0 }
+            .sortedWith(compareByDescending<PlexMetadata> { playCounts[it.ratingKey] ?: 0 }
                 .thenBy { it.index ?: Int.MAX_VALUE }
                 .thenBy { it.ratingKey })
-            .take(5)
+            .take(if (showAllPopular) 20 else 5)
     }
 
     LazyColumn(
@@ -293,6 +296,25 @@ fun ArtistDetailScreen(
                 }
             }
         } else {
+            // Popular tracks intentionally lead the artist page.
+            if (popularTracks.isNotEmpty()) {
+                item {
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("POPULAR TRACKS", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = 1.sp))
+                        if (currentArtistTracks.size > 5) TextButton(onClick = { showAllPopular = !showAllPopular }) { Text(if (showAllPopular) "Show less" else "See all (${minOf(currentArtistTracks.size, 20)})") }
+                    }
+                }
+                itemsIndexed(popularTracks) { _, track ->
+                    Row(Modifier.fillMaxWidth().clickable { viewModel.playTrackFromMetadata(track, popularTracks) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(track.title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold, color = Color.White), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${playCounts[track.ratingKey] ?: 0} plays", style = MaterialTheme.typography.bodySmall.copy(color = Color.White.copy(alpha = .55f)))
+                        }
+                        IconButton(onClick = { viewModel.downloadMetadataTrack(track) }) { Icon(Icons.Rounded.Download, "Download", tint = Color.White.copy(alpha = .7f)) }
+                    }
+                }
+            }
+
             // 1. ALBUMS CATEGORY LIST
             if (albumsList.isNotEmpty()) {
                 item {
@@ -397,7 +419,8 @@ fun ArtistDetailScreen(
                 }
             }
 
-            // 5. POPULAR TRACKS LIST
+            /* Popular tracks are rendered above the album categories. */
+            /* 5. POPULAR TRACKS LIST
             if (popularTracks.isNotEmpty()) {
                 item {
                     Row(
@@ -464,7 +487,9 @@ fun ArtistDetailScreen(
                                     album = track.parentTitle ?: "Popular Tracks",
                                     key = key,
                                     thumb = track.thumb ?: "",
-                                    duration = track.duration ?: 0L
+                                    duration = track.duration ?: 0L,
+                                    albumRatingKey = track.parentRatingKey,
+                                    artistRatingKey = track.grandparentRatingKey
                                 )
                                 viewModel.toggleLikeTrack(trackItem)
                             },
@@ -522,7 +547,7 @@ fun ArtistDetailScreen(
                         }
                     }
                 }
-            }
+            } */
 
             // 6. ARTIST BIO
             item {
@@ -1181,6 +1206,12 @@ fun AlbumDetailScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Album Radio", fontWeight = FontWeight.Bold)
                     }
+
+                    OutlinedButton(onClick = { viewModel.downloadAlbum(albumId) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(44.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)) {
+                        Icon(Icons.Rounded.Download, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Download Album", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
@@ -1226,7 +1257,9 @@ fun AlbumDetailScreen(
                                 album = albumName,
                                 key = key,
                                 thumb = track.thumb ?: "",
-                                duration = track.duration ?: 0L
+                                duration = track.duration ?: 0L,
+                                albumRatingKey = track.parentRatingKey,
+                                artistRatingKey = track.grandparentRatingKey
                             )
                         },
                         onClick = {

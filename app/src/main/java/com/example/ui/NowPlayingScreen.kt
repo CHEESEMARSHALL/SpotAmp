@@ -12,6 +12,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -70,7 +72,7 @@ fun NowPlayingScreen(
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
     val imageUrl = currentTrack?.let {
-        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
+        if (it.thumb.isNotEmpty()) it.thumb.takeIf { url -> url.startsWith("http://") || url.startsWith("https://") } ?: "$normalizedBaseUrl${it.thumb}" else null
     }
 
     val spectrum = remember { FloatArray(48) }
@@ -248,7 +250,7 @@ fun NowPlayingScreen(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.clickable {
                                         onCollapse()
-                                        onNavigateToArtist(track.ratingKey, track.artist)
+                                        track.artistRatingKey?.let { onNavigateToArtist(it, track.artist) }
                                     }
                                 )
 
@@ -263,7 +265,7 @@ fun NowPlayingScreen(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.clickable {
                                         onCollapse()
-                                        onNavigateToAlbum(track.ratingKey, track.album)
+                                        track.albumRatingKey?.let { onNavigateToAlbum(it, track.album) }
                                     }
                                 )
 
@@ -360,12 +362,19 @@ fun NowPlayingScreen(
                                         if (isCurrent) Color.White.copy(alpha = 0.1f) 
                                         else Color.Transparent
                                     )
+                                    .pointerInput(queue) {
+                                        detectDragGesturesAfterLongPress { change, dragAmount ->
+                                            change.consume()
+                                            val target = (idx + (if (dragAmount.y > 0) 1 else -1)).coerceIn(0, queue.lastIndex)
+                                            playbackManager.moveQueueItem(idx, target)
+                                        }
+                                    }
                                     .clickable { playbackManager.playQueue(queue, idx) }
                                     .padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 val trackImgUrl = if (track.thumb.isNotEmpty()) {
-                                    "$normalizedBaseUrl${track.thumb}"
+                                    track.thumb.takeIf { url -> url.startsWith("http://") || url.startsWith("https://") } ?: "$normalizedBaseUrl${track.thumb}"
                                 } else null
 
                                 Card(
@@ -583,7 +592,9 @@ fun NowPlayingScreen(
                     album = trackItem.album,
                     key = trackItem.key,
                     thumb = trackItem.thumb,
-                    duration = trackItem.duration
+                    duration = trackItem.duration,
+                    albumRatingKey = trackItem.albumRatingKey,
+                    artistRatingKey = trackItem.artistRatingKey
                 ),
                 viewModel = viewModel,
                 onDismiss = { showContextMenu = false },

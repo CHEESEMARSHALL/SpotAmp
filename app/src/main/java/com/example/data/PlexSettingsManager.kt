@@ -14,6 +14,8 @@ class PlexSettingsManager(context: Context) {
         private const val LEGACY_PREFS_NAME = "plex_settings"
         private const val KEY_BASE_URL = "plex_base_url"
         private const val KEY_TOKEN = "plex_token"
+        private const val KEY_COMPANION_URL = "companion_backend_url"
+        private const val KEY_COMPANION_TOKEN = "companion_backend_token"
         private const val KEY_SECTION_ID = "plex_section_id"
         private const val KEY_LIBRARY_NAME = "plex_library_name"
         
@@ -21,11 +23,13 @@ class PlexSettingsManager(context: Context) {
         private const val KEY_LASTFM_ENABLED = "lastfm_enabled"
         private const val KEY_LASTFM_USERNAME = "lastfm_username"
         private const val KEY_LASTFM_SESSION_KEY = "lastfm_session_key"
+        private const val KEY_LASTFM_PENDING_TOKEN = "lastfm_pending_token"
         
         private const val KEY_GAPLESS = "gapless_enabled"
         private const val KEY_EQ_ENABLED = "eq_enabled"
         private const val KEY_EQ_PRESET = "eq_preset"
         private const val KEY_NORMALIZATION = "normalization_enabled"
+        private const val KEY_EQ_BANDS = "eq_bands"
         
         private const val KEY_AI_PROVIDER = "ai_provider"
         private const val KEY_OFFLINE_ONLY = "offline_only"
@@ -73,6 +77,10 @@ class PlexSettingsManager(context: Context) {
         get() = prefs.getString(KEY_LASTFM_SESSION_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_LASTFM_SESSION_KEY, value).apply()
 
+    var lastFmPendingToken: String
+        get() = prefs.getString(KEY_LASTFM_PENDING_TOKEN, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LASTFM_PENDING_TOKEN, value).apply()
+
     var gaplessEnabled: Boolean
         get() = prefs.getBoolean(KEY_GAPLESS, true)
         set(value) = prefs.edit().putBoolean(KEY_GAPLESS, value).apply()
@@ -88,6 +96,10 @@ class PlexSettingsManager(context: Context) {
     var normalizationEnabled: Boolean
         get() = prefs.getBoolean(KEY_NORMALIZATION, false)
         set(value) = prefs.edit().putBoolean(KEY_NORMALIZATION, value).apply()
+
+    var equalizerBands: List<Int>
+        get() = prefs.getString(KEY_EQ_BANDS, "0,0,0,0,0")!!.split(",").mapNotNull { it.toIntOrNull() }.let { if (it.size == 5) it else List(5) { 0 } }
+        set(value) = prefs.edit().putString(KEY_EQ_BANDS, value.take(5).joinToString(",")).apply()
 
     var aiProvider: String
         get() = prefs.getString(KEY_AI_PROVIDER, "CloudAIProvider") ?: "CloudAIProvider"
@@ -132,6 +144,17 @@ class PlexSettingsManager(context: Context) {
             return if (envToken.isNotEmpty() && !envToken.contains("YOUR_PLEX_TOKEN")) envToken else ""
         }
         set(value) = prefs.edit().putString(KEY_TOKEN, value).apply()
+
+    var companionBackendUrl: String
+        get() = prefs.getString(KEY_COMPANION_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_COMPANION_URL, value).apply()
+
+    var companionBackendToken: String
+        get() = prefs.getString(KEY_COMPANION_TOKEN, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_COMPANION_TOKEN, value).apply()
+
+    val isCompanionConfigured: Boolean
+        get() = companionBackendUrl.isNotBlank() && companionBackendToken.isNotBlank()
 
     var sectionId: String
         get() = prefs.getString(KEY_SECTION_ID, "") ?: ""

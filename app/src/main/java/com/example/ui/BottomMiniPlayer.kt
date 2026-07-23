@@ -51,7 +51,7 @@ fun BottomMiniPlayer(
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
     val imageUrl = currentTrack?.let {
-        if (it.thumb.isNotEmpty()) "$normalizedBaseUrl${it.thumb}" else null
+        if (it.thumb.isNotEmpty()) it.thumb.takeIf { url -> url.startsWith("http://") || url.startsWith("https://") } ?: "$normalizedBaseUrl${it.thumb}" else null
     }
 
     Column(

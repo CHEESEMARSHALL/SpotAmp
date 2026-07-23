@@ -93,7 +93,7 @@ interface BackendApiService {
     // GET personalized home feed from your proxy backend
     @GET("api/v1/music/home")
     suspend fun getHomeFeed(
-        @Header("Authorization") userAuthToken: String? = null // Optional client-to-backend authentication
+        @Header("Authorization") userAuthToken: String? = null
     ): BackendHomeFeedResponse
 
     // GET Daily Mix details

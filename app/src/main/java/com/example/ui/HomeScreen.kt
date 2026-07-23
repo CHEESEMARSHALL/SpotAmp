@@ -125,7 +125,9 @@ fun HomeScreen(
                                         album = track.album,
                                         key = track.key,
                                         thumb = track.thumb,
-                                        duration = track.duration
+                                        duration = track.duration,
+                                        albumRatingKey = track.albumRatingKey,
+                                        artistRatingKey = track.artistRatingKey
                                     )
                                 }
                             }
@@ -241,7 +243,11 @@ fun HomeScreen(
                                 baseUrl = baseUrl,
                                 token = token,
                                 onTrackClick = { track ->
-                                    viewModel.playTrackItem(track, section.tracks)
+                                    if (section.type == "album" || section.type == "artist") {
+                                        track.albumRatingKey?.let { viewModel.playAlbum(it, track) } ?: viewModel.playTrackItem(track, section.tracks)
+                                    } else {
+                                        viewModel.playTrackItem(track, section.tracks)
+                                    }
                                 },
                                 onMoreClick = { track ->
                                     activeContextMenu = ContextMenuItem.Track(
@@ -251,7 +257,9 @@ fun HomeScreen(
                                         album = track.album,
                                         key = track.key,
                                         thumb = track.thumb,
-                                        duration = track.duration
+                                        duration = track.duration,
+                                        albumRatingKey = track.albumRatingKey,
+                                        artistRatingKey = track.artistRatingKey
                                     )
                                 }
                             )
@@ -277,7 +285,9 @@ fun HomeScreen(
                                     album = trackItem.album,
                                     key = trackItem.key,
                                     thumb = trackItem.thumb,
-                                    duration = trackItem.duration
+                                    duration = trackItem.duration,
+                                    albumRatingKey = trackItem.albumRatingKey,
+                                    artistRatingKey = trackItem.artistRatingKey
                                 )
                             }
                         )
@@ -1794,6 +1804,7 @@ fun MoreFromSectionLayout(
                     track = track,
                     baseUrl = baseUrl,
                     token = token,
+                    displayAlbum = section.type == "album" || section.type == "artist",
                     onClick = { onTrackClick(track) },
                     onMoreClick = { onMoreClick(track) }
                 )
@@ -1807,6 +1818,7 @@ fun TrackCard(
     track: TrackItem,
     baseUrl: String,
     token: String,
+    displayAlbum: Boolean = false,
     onClick: () -> Unit,
     onMoreClick: () -> Unit
 ) {
@@ -1879,7 +1891,7 @@ fun TrackCard(
         }
 
         Text(
-            text = track.title,
+                text = if (displayAlbum) track.album else track.title,
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = FontWeight.Bold,
                 color = Color.White
@@ -1888,7 +1900,7 @@ fun TrackCard(
             overflow = TextOverflow.Ellipsis
         )
         Text(
-            text = track.artist,
+                text = track.artist,
             style = MaterialTheme.typography.bodySmall.copy(
                 color = Color.White.copy(alpha = 0.5f)
             ),

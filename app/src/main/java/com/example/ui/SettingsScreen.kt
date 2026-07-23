@@ -10,6 +10,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,6 +23,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.LibraryCleanupSuggestion
 import com.example.data.LibraryCleanupSuggestionService
@@ -47,6 +52,8 @@ fun SettingsScreen(
     var tokenInput by remember { mutableStateOf(viewModel.repository.settings.token) }
     var lyricsDirInput by remember { mutableStateOf(viewModel.repository.settings.lyricsDirectory) }
     var hideToken by remember { mutableStateOf(true) }
+    var companionUrlInput by remember { mutableStateOf(viewModel.repository.settings.companionBackendUrl) }
+    var companionTokenInput by remember { mutableStateOf(viewModel.repository.settings.companionBackendToken) }
 
     val cleanupSuggestions by produceState<List<LibraryCleanupSuggestion>>(emptyList(), cachedCount, selectedSectionId) {
         value = runCatching {
@@ -180,6 +187,21 @@ fun SettingsScreen(
         val inputUnfocusedContainer = if (isLightTheme) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.4f)
         val inputFocusedBorder = if (isLightTheme) MaterialTheme.colorScheme.primary else Color(0xFF6366F1).copy(alpha = 0.5f)
         val inputUnfocusedBorder = if (isLightTheme) MaterialTheme.colorScheme.outline.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.05f)
+
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = cardBgColor),
+            border = cardBorder
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("SpotCore Companion (Optional)", color = labelColor, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text("Home uses SpotCore first when configured, then falls back to Plex if it cannot be reached.", color = subLabelColor, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp, bottom = 12.dp))
+                OutlinedTextField(value = companionUrlInput, onValueChange = { companionUrlInput = it }, label = { Text("Backend URL") }, placeholder = { Text("http://192.168.1.50:3000") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp))
+                OutlinedTextField(value = companionTokenInput, onValueChange = { companionTokenInput = it }, label = { Text("Backend token") }, singleLine = true, visualTransformation = if (hideToken) PasswordVisualTransformation() else VisualTransformation.None, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp))
+                Button(onClick = { viewModel.saveCompanionBackend(companionUrlInput, companionTokenInput) }, enabled = companionUrlInput.isBlank() || companionTokenInput.isNotBlank()) { Text("Save Companion") }
+            }
+        }
 
         Card(
             modifier = Modifier
@@ -685,6 +707,7 @@ fun SettingsScreen(
             val gaplessEnabled by viewModel.gaplessEnabledFlow.collectAsStateWithLifecycle()
             val eqEnabled by viewModel.equalizerEnabledFlow.collectAsStateWithLifecycle()
             val eqPreset by viewModel.equalizerPresetFlow.collectAsStateWithLifecycle()
+            val eqBands by viewModel.equalizerBandsFlow.collectAsStateWithLifecycle()
             val normEnabled by viewModel.normalizationEnabledFlow.collectAsStateWithLifecycle()
 
             Card(
@@ -779,7 +802,7 @@ fun SettingsScreen(
                     if (eqEnabled) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Text("Equalizer Presets", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        val presets = listOf("Flat", "Bass Booster", "Vocal Booster", "Treble Booster", "Electronic")
+                        val presets = listOf("Flat", "Bass Booster", "Vocal Booster", "Treble Booster", "Electronic", "Custom")
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -796,6 +819,18 @@ fun SettingsScreen(
                                         labelColor = if (isSelected) Color(0xFF818CF8) else Color.White
                                     )
                                 )
+                            }
+                        }
+                        if (eqPreset == "Custom") {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text("Fine tune bands", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            val labels = listOf("60 Hz", "230 Hz", "910 Hz", "3.6 kHz", "14 kHz")
+                            eqBands.forEachIndexed { index, value ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(labels[index], color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, modifier = Modifier.width(52.dp))
+                                    Slider(value = value.toFloat(), onValueChange = { viewModel.updateEqualizerBand(index, it.toInt()) }, valueRange = -1500f..1500f, modifier = Modifier.weight(1f))
+                                    Text("${value / 100} dB", color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, modifier = Modifier.width(42.dp))
+                                }
                             }
                         }
                     }
@@ -881,6 +916,14 @@ fun SettingsScreen(
             }
 
             var modelPathInput by remember { mutableStateOf(viewModel.repository.settings.aiModelPath) }
+            var modelImportError by remember { mutableStateOf<String?>(null) }
+            val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    val imported = viewModel.importGgufModel(uri)
+                    if (imported != null) { modelPathInput = imported; modelImportError = null }
+                    else modelImportError = "Could not import this GGUF file."
+                }
+            }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1071,6 +1114,12 @@ fun SettingsScreen(
                             colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color(0xFF6366F1), unfocusedBorderColor = Color.White.copy(alpha = 0.1f)),
                             modifier = Modifier.fillMaxWidth()
                         )
+                        OutlinedButton(onClick = { modelPicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                            Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Choose GGUF file")
+                        }
+                        modelImportError?.let { Text(it, color = Color(0xFFFCA5A5), fontSize = 11.sp) }
                         Spacer(Modifier.height(4.dp))
                         val isBridgeLoaded = com.example.data.LlamaCppBridge.isNativeLibraryLoaded()
                         Text(
@@ -1090,6 +1139,8 @@ fun SettingsScreen(
 
             var lastFmUserText by remember { mutableStateOf(lastFmUsername) }
             var lastFmSessionText by remember { mutableStateOf(lastFmSessionKey) }
+            var lastFmAuthMessage by remember { mutableStateOf("") }
+            val lastFmContext = LocalContext.current
 
             Card(
                 modifier = Modifier
@@ -1137,6 +1188,22 @@ fun SettingsScreen(
 
                     if (lastFmEnabled) {
                         Spacer(modifier = Modifier.height(14.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                viewModel.startLastFmAuthorization(
+                                    onUrl = { lastFmContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))); lastFmAuthMessage = "Authorize SpotAmp in your browser, then tap Complete authorization." },
+                                    onError = { lastFmAuthMessage = it }
+                                )
+                            }) { Text("Connect Last.fm") }
+                            OutlinedButton(onClick = {
+                                viewModel.completeLastFmAuthorization(
+                                    onSuccess = { lastFmUserText = it; lastFmAuthMessage = "Connected as $it" },
+                                    onError = { lastFmAuthMessage = it }
+                                )
+                            }) { Text("Complete authorization") }
+                        }
+                        if (lastFmAuthMessage.isNotBlank()) Text(lastFmAuthMessage, color = Color.White.copy(alpha = 0.75f), fontSize = 11.sp)
+                        Spacer(modifier = Modifier.height(10.dp))
                         OutlinedTextField(
                             value = lastFmUserText,
                             onValueChange = { lastFmUserText = it; viewModel.updateLastFmUsername(it) },

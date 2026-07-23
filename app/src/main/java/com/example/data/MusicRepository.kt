@@ -82,6 +82,10 @@ class MusicRepository(private val context: Context) {
         musicDao.removeTrackFromPlaylist(playlistId, ratingKey)
     }
 
+    suspend fun reorderPlaylist(playlistId: Int, tracks: List<PlaylistTrackEntity>) = withContext(Dispatchers.IO) {
+        tracks.forEachIndexed { index, track -> musicDao.updatePlaylistTrackOrder(playlistId, track.ratingKey, index.toLong()) }
+    }
+
     // Downloads
     val downloadedTracks: Flow<List<DownloadedTrackEntity>> = musicDao.getAllDownloadedTracks()
 
@@ -223,8 +227,7 @@ class MusicRepository(private val context: Context) {
 
     suspend fun getArtists(sectionId: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
         try {
-            val response = getService().getLibraryItems(sectionId, "8", token = settings.token)
-            response.mediaContainer.metadata ?: emptyList()
+            getAllLibraryItems(sectionId, "8")
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error fetching artists", e)
             emptyList()
@@ -233,12 +236,27 @@ class MusicRepository(private val context: Context) {
 
     suspend fun getAlbums(sectionId: String): List<PlexMetadata> = withContext(Dispatchers.IO) {
         try {
-            val response = getService().getLibraryItems(sectionId, "9", token = settings.token)
-            response.mediaContainer.metadata ?: emptyList()
+            getAllLibraryItems(sectionId, "9")
         } catch (e: Exception) {
             Log.e("MusicRepository", "Error fetching albums", e)
             emptyList()
         }
+    }
+
+    private suspend fun getAllLibraryItems(sectionId: String, type: String): List<PlexMetadata> {
+        val result = mutableListOf<PlexMetadata>()
+        var offset = 0
+        val pageSize = 200
+        while (true) {
+            val container = getService().getLibraryItems(sectionId, type, offset, pageSize, settings.token).mediaContainer
+            val page = container.metadata.orEmpty()
+            if (page.isEmpty()) break
+            result += page
+            offset += page.size
+            val total = container.totalSize ?: 0
+            if (page.size < pageSize || (total > 0 && offset >= total)) break
+        }
+        return result.distinctBy { it.ratingKey }
     }
 
     suspend fun getRecentlyAddedAlbums(sectionId: String): List<PlexMetadata> = withContext(Dispatchers.IO) {

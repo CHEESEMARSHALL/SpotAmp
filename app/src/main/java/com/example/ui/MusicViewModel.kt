@@ -17,6 +17,8 @@ import com.example.data.LibrarySyncState
 import com.example.playback.PlaybackManager
 import com.example.playback.TrackItem
 import com.example.data.HomeFeedState
+import com.example.data.HomeRecentPlay
+import com.example.data.MadeForYouItem
 import com.example.sync.SyncScheduler
 import com.example.data.HomeRecommendationEngine
 import com.example.data.DailyMix
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import androidx.work.Constraints
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -37,6 +40,11 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.example.data.TrackDownloadWorker
 import java.util.concurrent.TimeUnit
+import com.example.data.BackendHomeMapper
+import com.example.data.BackendHomeFeedResponse
+import com.example.data.LastFmScrobbler
+import android.content.Intent
+import android.net.Uri
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val repository = MusicRepository(application)
@@ -125,7 +133,33 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         cachedTracks
     ) { recentAdded, history, cached ->
         recommendationEngine.generateHomeFeed(recentAdded, history)
+    }.flatMapLatest { plexFeed ->
+        flow {
+            val url = repository.settings.companionBackendUrl
+            val companionToken = repository.settings.companionBackendToken
+            if (url.isBlank() || companionToken.isBlank()) emit(plexFeed)
+            else emit(runCatching {
+                val response = com.example.data.BackendClientManager.getApiService(url)
+                    .getHomeFeed("Bearer $companionToken")
+                companionFeed(response, plexFeed)
+            }.getOrElse { plexFeed })
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HomeFeedState())
+
+    private fun companionFeed(response: BackendHomeFeedResponse, fallback: HomeFeedState): HomeFeedState {
+        val recent = response.recentlyPlayed.orEmpty().map(BackendHomeMapper::track)
+        val mixes = response.dailyMixes.orEmpty().map { mix ->
+            DailyMix(mix.id, mix.title, mix.reason, mix.tracks.map(BackendHomeMapper::track), mix.colors.mapNotNull { it.removePrefix("#").toLongOrNull(16) })
+        }
+        val made = response.madeForYou.orEmpty().map { item ->
+            MadeForYouItem(item.id, item.title, item.description, item.artists, item.tracks.map(BackendHomeMapper::track), item.coverUrl)
+        }
+        return fallback.copy(
+            recentPlays = recent.takeIf { it.isNotEmpty() }?.let { tracks -> listOf(HomeRecentPlay("companion-recent", "Recently Played", tracks.first().artist, tracks.first().thumb, "From SpotCore", "track", tracks)) } ?: fallback.recentPlays,
+            dailyMixes = mixes.ifEmpty { fallback.dailyMixes },
+            madeForYou = made.ifEmpty { fallback.madeForYou }
+        )
+    }
 
     // Playlist and Download states
     val playlists: StateFlow<List<com.example.data.PlaylistEntity>> = repository.playlists
@@ -159,6 +193,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _equalizerPresetFlow = MutableStateFlow(repository.settings.equalizerPreset)
     val equalizerPresetFlow: StateFlow<String> = _equalizerPresetFlow.asStateFlow()
+    private val _equalizerBandsFlow = MutableStateFlow(repository.settings.equalizerBands)
+    val equalizerBandsFlow: StateFlow<List<Int>> = _equalizerBandsFlow.asStateFlow()
 
     private val _normalizationEnabledFlow = MutableStateFlow(repository.settings.normalizationEnabled)
     val normalizationEnabledFlow: StateFlow<Boolean> = _normalizationEnabledFlow.asStateFlow()
@@ -186,6 +222,22 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _ggufModelSizeFlow.value = size
     }
 
+    fun importGgufModel(uri: android.net.Uri): String? {
+        return runCatching {
+            val resolver = getApplication<android.app.Application>().contentResolver
+            val modelsDir = java.io.File(getApplication<android.app.Application>().filesDir, "models").apply { mkdirs() }
+            val name = "selected-model.gguf"
+            val destination = java.io.File(modelsDir, name)
+            resolver.openInputStream(uri).use { input ->
+                requireNotNull(input) { "Unable to open selected model file" }
+                destination.outputStream().use { output -> input.copyTo(output) }
+            }
+            require(destination.length() > 1024) { "Selected file is too small to be a GGUF model" }
+            repository.settings.aiModelPath = destination.absolutePath
+            destination.absolutePath
+        }.getOrNull()
+    }
+
     fun updateTheme(themeName: String) {
         repository.settings.activeTheme = themeName
         _activeThemeFlow.value = themeName
@@ -208,6 +260,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.refreshAudioSettings()
     }
 
+    fun updateEqualizerBand(index: Int, value: Int) {
+        val bands = _equalizerBandsFlow.value.toMutableList()
+        if (index !in bands.indices) return
+        bands[index] = value
+        repository.settings.equalizerBands = bands
+        _equalizerBandsFlow.value = bands
+        if (presetIsCustom()) playbackManager.refreshAudioSettings()
+    }
+
+    private fun presetIsCustom() = repository.settings.equalizerPreset.equals("Custom", ignoreCase = true)
+
     fun updateNormalizationEnabled(enabled: Boolean) {
         repository.settings.normalizationEnabled = enabled
         _normalizationEnabledFlow.value = enabled
@@ -227,6 +290,21 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun updateLastFmSessionKey(sessionKey: String) {
         repository.settings.lastFmSessionKey = sessionKey
         _lastFmSessionKeyFlow.value = sessionKey
+    }
+
+    fun startLastFmAuthorization(onUrl: (String) -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching { LastFmScrobbler.requestAuthorization(repository.settings) }
+                .onSuccess { onUrl(it) }.onFailure { onError(it.message ?: "Last.fm authorization failed") }
+        }
+    }
+
+    fun completeLastFmAuthorization(onSuccess: (String) -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            runCatching { LastFmScrobbler.completeAuthorization(repository.settings) }
+                .onSuccess { _lastFmEnabledFlow.value = true; _lastFmUsernameFlow.value = repository.settings.lastFmUsername; _lastFmSessionKeyFlow.value = repository.settings.lastFmSessionKey; onSuccess(it) }
+                .onFailure { onError(it.message ?: "Last.fm authorization failed") }
+        }
     }
 
     fun updateSyncInterval(hours: Long) {
@@ -339,6 +417,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.removeTrackFromPlaylist(playlistId, ratingKey)
         }
+    }
+
+    fun reorderPlaylist(playlistId: Int, tracks: List<com.example.data.PlaylistTrackEntity>) {
+        viewModelScope.launch { repository.reorderPlaylist(playlistId, tracks) }
     }
 
     fun startDownload(track: TrackItem) {
@@ -457,6 +539,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun updatePlaybackCredentials() {
         playbackManager.setCredentials(repository.settings.baseUrl, repository.settings.token)
+        playbackManager.setCompanionToken(repository.settings.companionBackendToken)
     }
 
     fun saveCredentials(baseUrl: String, token: String, lyricsDirectory: String = "") {
@@ -468,6 +551,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         if (repository.settings.isConfigured) {
             loadLibraries()
         }
+    }
+
+    fun saveCompanionBackend(url: String, token: String) {
+        repository.settings.companionBackendUrl = url.trim().trimEnd('/')
+        repository.settings.companionBackendToken = token.trim()
+        playbackManager.setCompanionToken(token)
     }
 
     fun selectLibrary(sectionId: String, name: String) {
@@ -761,7 +850,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _aiGeneratedTracks.value = emptyList()
             _aiExplanation.value = null
             try {
+                Log.i("MusicViewModel", "AI request started promptLength=${prompt.length} provider=${repository.settings.aiProvider}")
                 val cachedTracks = repository.getCachedTracksList()
+                Log.i("MusicViewModel", "AI cache loaded tracks=${cachedTracks.size}")
                 if (cachedTracks.isEmpty()) {
                     _aiError.value = "Your library cache is empty. Please run sync first!"
                     return@launch
@@ -783,7 +874,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 Log.d("MusicViewModel", "Generating AI playlist using provider: ${provider.name}")
                 var explanationPrefix: String? = null
                 val rawIntent = try {
-                    provider.generatePlaylistIntent(prompt, cachedTracks)
+                    withTimeout(30_000L) { provider.generatePlaylistIntent(prompt, cachedTracks) }
                 } catch (e: Exception) {
                     if (provider is com.example.data.CloudAIProvider) {
                         Log.w("MusicViewModel", "Cloud AI failed; falling back to local on-device provider", e)
@@ -826,9 +917,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.playTrack(trackItem, queueItems)
     }
 
+    fun downloadMetadataTrack(track: PlexMetadata) = startDownload(track)
+
     fun playAllTracks(queueList: List<PlexMetadata>, startIndex: Int = 0) {
         val queueItems = queueList.mapNotNull { mapMetadataToTrackItem(it) }
         playbackManager.playQueue(queueItems, startIndex)
+    }
+
+    fun playAlbum(albumId: String, fallback: TrackItem) {
+        viewModelScope.launch {
+            val tracks = repository.getAlbumTracks(albumId)
+            if (tracks.isNotEmpty()) playAllTracks(tracks, 0) else playTrackItem(fallback)
+        }
     }
 
     fun playRecentTrack(recent: RecentTrack) {
@@ -853,7 +953,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             album = meta.parentTitle ?: "Unknown Album",
             key = key,
             thumb = meta.thumb ?: "",
-            duration = meta.duration ?: 0L
+            duration = meta.duration ?: 0L,
+            albumRatingKey = meta.parentRatingKey,
+            artistRatingKey = meta.grandparentRatingKey
         )
     }
 
@@ -960,4 +1062,3 @@ data class SimilarArtist(
     val name: String,
     val style: String
 )
-

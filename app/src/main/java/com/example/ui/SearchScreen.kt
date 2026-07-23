@@ -48,12 +48,17 @@ fun SearchScreen(
             .toSet()
     }
     var offlineOnly by remember { mutableStateOf(viewModel.repository.settings.offlineOnly) }
+    var aiMode by remember { mutableStateOf(false) }
+    val aiLoading by viewModel.aiLoading.collectAsStateWithLifecycle()
+    val aiError by viewModel.aiError.collectAsStateWithLifecycle()
+    val aiExplanation by viewModel.aiExplanation.collectAsStateWithLifecycle()
+    val aiTracks by viewModel.aiGeneratedTracks.collectAsStateWithLifecycle()
 
     var activeContextMenu by remember { mutableStateOf<ContextMenuItem?>(null) }
 
     // Real-time search trigger
     LaunchedEffect(searchQuery) {
-        viewModel.search(searchQuery)
+        if (!aiMode) viewModel.search(searchQuery)
     }
 
     val artistsMatches = searchResults.filter { it.type == "artist" }
@@ -120,6 +125,11 @@ fun SearchScreen(
             shape = RoundedCornerShape(16.dp)
         )
 
+        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !aiMode, onClick = { aiMode = false }, label = { Text("Search") })
+            FilterChip(selected = aiMode, onClick = { aiMode = true }, label = { Text("Ask SpotAmp") })
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -141,7 +151,25 @@ fun SearchScreen(
             )
         }
 
-        if (searchQuery.isBlank()) {
+        if (aiMode) {
+            Button(onClick = { if (searchQuery.isNotBlank()) viewModel.generateAiPlaylist(searchQuery) }, enabled = searchQuery.isNotBlank() && !aiLoading, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))) {
+                if (aiLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White) else Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
+                Spacer(Modifier.width(8.dp)); Text(if (aiLoading) "Thinking…" else "Ask SpotAmp")
+            }
+            aiError?.let { Text(it, color = Color(0xFFFCA5A5), modifier = Modifier.padding(bottom = 8.dp)) }
+            aiExplanation?.let { Text(it, color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+            if (aiTracks.isNotEmpty()) {
+                Button(onClick = { viewModel.playbackManager.playQueue(aiTracks, 0) }, modifier = Modifier.fillMaxWidth()) { Text("Play generated mix (${aiTracks.size})") }
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(aiTracks) { track ->
+                        Row(modifier = Modifier.fillMaxWidth().clickable { viewModel.playbackManager.playTrack(track, aiTracks) }.padding(vertical = 10.dp)) {
+                            Column(modifier = Modifier.weight(1f)) { Text(track.title, color = Color.White); Text("${track.artist} • ${track.album}", color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp) }
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Play", tint = Color(0xFF818CF8))
+                        }
+                    }
+                }
+            }
+        } else if (searchQuery.isBlank()) {
             // Empty State
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -291,7 +319,9 @@ fun SearchScreen(
                                     album = track.parentTitle ?: "Unknown Album",
                                     key = key,
                                     thumb = track.thumb ?: "",
-                                    duration = track.duration ?: 0L
+                                    duration = track.duration ?: 0L,
+                                    albumRatingKey = track.parentRatingKey,
+                                    artistRatingKey = track.grandparentRatingKey
                                 )
                             }
                         ) {

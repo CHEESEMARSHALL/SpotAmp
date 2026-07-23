@@ -324,14 +324,16 @@ class HomeRecommendationEngine(private val context: Context) {
         // Use historical albums
         val uniqueAlbums = history.map { it.album to it }.distinctBy { it.first }
         uniqueAlbums.take(4).forEach { (_, recent) ->
+            val cached = cachedTracks.firstOrNull { it.ratingKey == recent.ratingKey }
+                ?: cachedTracks.firstOrNull { it.album == recent.album && it.artist == recent.artist }
             items.add(
                 JumpBackInItem(
-                    id = "jbi_alb_${recent.ratingKey}",
+                    id = "jbi_alb_${cached?.albumRatingKey ?: recent.ratingKey}",
                     title = recent.album,
                     subtitle = recent.artist,
                     thumb = recent.thumb,
                     type = "album",
-                    extraData = recent.ratingKey
+                    extraData = cached?.albumRatingKey ?: recent.ratingKey
                 )
             )
         }
@@ -343,12 +345,12 @@ class HomeRecommendationEngine(private val context: Context) {
             if (match != null) {
                 items.add(
                     JumpBackInItem(
-                        id = "jbi_art_${match.ratingKey}",
+                        id = "jbi_art_${match.artistRatingKey ?: match.ratingKey}",
                         title = artistName,
                         subtitle = "Artist",
                         thumb = match.thumb,
                         type = "artist",
-                        extraData = artistName
+                        extraData = match.artistRatingKey ?: match.ratingKey
                     )
                 )
             }
@@ -482,11 +484,14 @@ class HomeRecommendationEngine(private val context: Context) {
             .sortedBy { it.first }
 
         artistGroups.take(2).forEach { (artistName, tracks) ->
+            val albumRepresentatives = tracks.groupBy { it.album }
+                .values.map { it.minBy { track -> track.ratingKey } }
+                .sortedBy { it.album }
             sections.add(
                 MoreFromSection(
                     title = "More from $artistName",
                     type = "artist",
-                    tracks = tracks.sortedBy { it.ratingKey }.take(8).map { it.toTrackItem() }
+                    tracks = albumRepresentatives.take(8).map { it.toTrackItem() }
                 )
             )
         }
@@ -502,7 +507,7 @@ class HomeRecommendationEngine(private val context: Context) {
                 MoreFromSection(
                     title = "Full Album: $albumName",
                     type = "album",
-                    tracks = tracks.sortedBy { it.ratingKey }.map { it.toTrackItem() }
+                    tracks = listOf(tracks.minBy { it.ratingKey }).map { it.toTrackItem() }
                 )
             )
         }
@@ -553,7 +558,7 @@ class HomeRecommendationEngine(private val context: Context) {
         }
         if (randomAlbum.isNotEmpty()) {
             val title = "Random Album Discovery"
-            sections.add(MoreFromSection(title, "album", randomAlbum.sortedBy { it.ratingKey }.map { it.toTrackItem() }, explanationService.explainShelf(title, randomAlbum).text))
+            sections.add(MoreFromSection(title, "album", listOf(randomAlbum.minBy { it.ratingKey }.toTrackItem()), explanationService.explainShelf(title, randomAlbum).text))
         }
 
         return sections
@@ -837,5 +842,7 @@ fun CachedTrack.toTrackItem(): TrackItem {
         thumb = this.thumb,
         duration = this.duration,
         genres = this.genres.split('|').map { it.trim() }.filter { it.isNotEmpty() }
+        ,albumRatingKey = this.albumRatingKey
+        ,artistRatingKey = this.artistRatingKey
     )
 }

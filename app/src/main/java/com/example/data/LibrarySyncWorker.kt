@@ -71,6 +71,8 @@ class LibrarySyncWorker(
                             lastPlayedAt = track.lastViewedAt,
                             genres = track.genres.orEmpty().joinToString("|") { it.tag },
                             collections = track.collections.orEmpty().joinToString("|") { it.tag },
+                            albumRatingKey = track.parentRatingKey,
+                            artistRatingKey = track.grandparentRatingKey,
                             syncId = syncId
                         )
                     }

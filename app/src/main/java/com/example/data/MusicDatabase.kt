@@ -31,6 +31,8 @@ data class CachedTrack(
     val lastPlayedAt: Long? = null,
     val genres: String = "",
     val collections: String = "",
+    val albumRatingKey: String? = null,
+    val artistRatingKey: String? = null,
     val syncId: Long = 0 // Track which sync indexed this
 )
 
@@ -183,6 +185,9 @@ interface MusicDao {
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId AND ratingKey = :ratingKey")
     suspend fun removeTrackFromPlaylist(playlistId: Int, ratingKey: String)
 
+    @Query("UPDATE playlist_tracks SET addedAt = :orderValue WHERE playlistId = :playlistId AND ratingKey = :ratingKey")
+    suspend fun updatePlaylistTrackOrder(playlistId: Int, ratingKey: String, orderValue: Long)
+
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId")
     suspend fun clearPlaylistTracks(playlistId: Int)
 
@@ -255,14 +260,14 @@ interface MusicDao {
         ListeningHistoryEntity::class,
         SyncStateEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {
     abstract fun musicDao(): MusicDao
 
     companion object {
-        val MIGRATION_6_7 = object : Migration(6, 7) {
+    val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL(
                     """CREATE TABLE IF NOT EXISTS listening_history (
@@ -285,6 +290,13 @@ abstract class MusicDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MusicDatabase? = null
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE cached_tracks ADD COLUMN albumRatingKey TEXT")
+                database.execSQL("ALTER TABLE cached_tracks ADD COLUMN artistRatingKey TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): MusicDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -292,7 +304,7 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     "music_database"
                 )
-                .addMigrations(MIGRATION_6_7)
+                .addMigrations(MIGRATION_6_7, MIGRATION_8_9)
                 .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5)
                 .build()
                 INSTANCE = instance

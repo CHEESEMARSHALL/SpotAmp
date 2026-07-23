@@ -261,11 +261,21 @@ class CloudAIProvider : AIProvider {
             val jsonText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: ""
             Log.d("CloudAIProvider", "Gemini response received (${jsonText.length} chars)")
 
-            val json = Json { 
+            val normalizedJson = jsonText.trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+                .let { raw ->
+                    val start = raw.indexOf('{')
+                    val end = raw.lastIndexOf('}')
+                    if (start >= 0 && end > start) raw.substring(start, end + 1) else raw
+                }
+            val json = Json {
                 ignoreUnknownKeys = true
                 coerceInputValues = true
             }
-            json.decodeFromString<PlaylistIntent>(jsonText)
+            json.decodeFromString<PlaylistIntent>(normalizedJson)
         } catch (e: Exception) {
             Log.e("CloudAIProvider", "Error parsing Gemini response, falling back to Local parser", e)
             // Fallback to local parser on parse error or network error
@@ -373,9 +383,11 @@ object LlamaCppBridge {
         try {
             System.loadLibrary("llama-android")
             isLoaded = true
+            android.util.Log.i("LlamaCppBridge", "Loaded libllama-android.so")
         } catch (e: UnsatisfiedLinkError) {
             loadError = e.message
             isLoaded = false
+            android.util.Log.e("LlamaCppBridge", "Failed to load libllama-android.so: $loadError", e)
         } catch (e: Exception) {
             loadError = e.message
             isLoaded = false
@@ -409,6 +421,30 @@ class LlamaCppAIProvider(
             )
         }
 
+        val modelFile = java.io.File(modelPath)
+        if (!modelFile.exists() || !modelFile.isFile || !modelFile.canRead()) {
+            val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+            return@withContext fallbackIntent.copy(
+                explanation = "GGUF model file is not readable at '$modelPath' (exists=${modelFile.exists()}, readable=${modelFile.canRead()}). [Fell back to local rules engine]"
+            )
+        }
+        Log.i("LlamaCppAIProvider", "GGUF file validated size=${modelFile.length()} bytes path=${modelFile.absolutePath}")
+
+        // Keep the in-process Android path below the native memory pressure seen
+        // on the Pixel test device. Larger files can enter llama.cpp and then
+        // fault while quantized weights are being multiplied, leaving the UI in
+        // an unrecoverable loading state. They should be handled by the rules
+        // fallback until a streamed/isolated inference service is available.
+        val maxOnDeviceModelBytes = 768L * 1024L * 1024L
+        if (modelFile.length() > maxOnDeviceModelBytes) {
+            val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
+            return@withContext fallbackIntent.copy(
+                explanation = "This GGUF is ${(modelFile.length() / (1024L * 1024L))} MB. " +
+                        "The in-process Android runner supports models up to 768 MB; " +
+                        "this file was not loaded. [Used local rules engine fallback]"
+            )
+        }
+
         if (!LlamaCppBridge.isNativeLibraryLoaded()) {
             val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
             val errMsg = LlamaCppBridge.getLoadError() ?: "libllama-android.so library not loaded"
@@ -419,8 +455,10 @@ class LlamaCppAIProvider(
             )
         }
 
+        Log.i("LlamaCppAIProvider", "Native bridge loaded; attempting GGUF model at $modelPath")
+
         try {
-            val availableArtists = cachedTracks.map { it.artist }.distinct().take(100).joinToString(", ")
+            val availableArtists = cachedTracks.map { it.artist }.distinct().take(25).joinToString(", ")
             val systemPrompt = """
                 You are a Sonic Sage AI music interpreter. You translate natural language user queries into a structured playlist intent JSON object.
                 You must analyze the user prompt and extract seeds, genres, and styles. Only output RAW JSON according to this schema:
@@ -439,13 +477,17 @@ class LlamaCppAIProvider(
                 throw IllegalStateException("Failed to load GGUF model at $modelPath")
             }
 
+            val startedAt = System.currentTimeMillis()
             val jsonText = try {
-                LlamaCppBridge.generate(modelPtr, prompt, systemPrompt, maxTokens = 512, temp = temperature)
+                // Keep the first on-device assistant response bounded. The native call is
+                // synchronous, so an unnecessarily long JSON completion can look like a hang
+                // on phone CPUs; valid playlist JSON fits comfortably in this budget.
+                LlamaCppBridge.generate(modelPtr, prompt, systemPrompt, maxTokens = 64, temp = temperature)
             } finally {
                 LlamaCppBridge.freeModel(modelPtr)
             }
 
-            Log.d("LlamaCppAIProvider", "Received native GGUF response: $jsonText")
+            Log.i("LlamaCppAIProvider", "Received native GGUF response in ${System.currentTimeMillis() - startedAt}ms (${jsonText.length} chars): $jsonText")
 
             val json = Json { 
                 ignoreUnknownKeys = true
@@ -456,7 +498,7 @@ class LlamaCppAIProvider(
             Log.e("LlamaCppAIProvider", "Error in native GGUF generation", e)
             val fallbackIntent = LocalAIProvider().generatePlaylistIntent(prompt, cachedTracks)
             fallbackIntent.copy(
-                explanation = "Failed to run GGUF model ($modelPresetSize) at path '$modelPath': ${e.localizedMessage}. [Fell back to local rules engine]\n\n" + (fallbackIntent.explanation ?: "")
+                explanation = "GGUF inference returned an unusable response ($modelPresetSize): ${e.localizedMessage}. [Fell back to local rules engine]\n\n" + (fallbackIntent.explanation ?: "")
             )
         }
     }
@@ -619,4 +661,3 @@ class RecommendationEngine(private val context: Context) {
         }
     }
 }
-

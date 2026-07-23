@@ -32,6 +32,7 @@ import coil.request.ImageRequest
 import com.example.data.*
 import com.example.playback.TrackItem
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 // -------------------------------------------------------------
 // ARTIST MIX BUILDER SCREEN
@@ -725,9 +726,20 @@ fun GenericRadioSelectorScreen(
     var itemsList by remember { mutableStateOf<List<String>>(emptyList()) }
     var searchQuery by remember { mutableStateOf("") }
     var trackCount by remember { mutableFloatStateOf(40f) }
+    var loadingLibrary by remember { mutableStateOf(false) }
 
     LaunchedEffect(station.type) {
         cachedTracks = runCatching { viewModel.repository.getCachedTracksList() }.getOrDefault(emptyList())
+        if (cachedTracks.isEmpty()) {
+            loadingLibrary = true
+            viewModel.syncLibraryCache()
+            repeat(30) {
+                delay(1000)
+                cachedTracks = runCatching { viewModel.repository.getCachedTracksList() }.getOrDefault(emptyList())
+                if (cachedTracks.isNotEmpty()) return@repeat
+            }
+            loadingLibrary = false
+        }
         itemsList = when (station.type) {
             RadioType.STYLE_RADIO, RadioType.GENRE_RADIO, RadioType.MOOD_RADIO -> {
                 cachedTracks.flatMap { it.genres.split('|') }.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
@@ -835,7 +847,15 @@ fun GenericRadioSelectorScreen(
         }
 
         // List
-        if (filteredItems.isEmpty()) {
+        if (loadingLibrary) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Indexing your Plex library…", color = Color.White.copy(alpha = 0.55f))
+                }
+            }
+        } else if (filteredItems.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No items found matching filter.", color = Color.White.copy(alpha = 0.4f))
             }

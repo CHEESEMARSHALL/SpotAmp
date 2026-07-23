@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.PlexMetadata
@@ -35,6 +37,21 @@ import com.example.playback.TrackItem
 
 enum class ViewMode { Grid, List }
 enum class SortOption { Name, RecentlyAdded }
+
+@Composable
+private fun AlphabetRail(names: List<String>, onLetter: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val letters = remember(names) { names.map { it.trim().firstOrNull()?.uppercaseChar() ?: '#' }.distinct() }
+    Column(modifier = modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        letters.forEach { letter ->
+            Text(
+                text = letter.toString(),
+                color = Color(0xFF818CF8),
+                fontSize = 10.sp,
+                modifier = Modifier.clickable { onLetter(names.indexOfFirst { it.trim().firstOrNull()?.uppercaseChar() == letter }) }.padding(vertical = 2.dp, horizontal = 5.dp)
+            )
+        }
+    }
+}
 
 @Composable
 fun LibraryScreen(
@@ -67,8 +84,8 @@ fun LibraryScreen(
     var offlineOnly by remember { mutableStateOf(viewModel.repository.settings.offlineOnly) }
     
     // View modes
-    var artistViewMode by remember { mutableStateOf(ViewMode.Grid) }
-    var albumViewMode by remember { mutableStateOf(ViewMode.Grid) }
+    var artistViewMode by remember { mutableStateOf(ViewMode.List) }
+    var albumViewMode by remember { mutableStateOf(ViewMode.List) }
     
     // Sorting
     var artistSort by remember { mutableStateOf(SortOption.Name) }
@@ -260,13 +277,17 @@ fun LibraryScreen(
                                 }
                             }
                         } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(sortedArtists) { artist ->
-                                    // Simple List Item for Artist
-                                    Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToArtist(artist.ratingKey, artist.title) }.padding(8.dp)) {
-                                        Text(artist.title, color = Color.White)
+                            val listState = rememberLazyListState()
+                            val scope = rememberCoroutineScope()
+                            Box {
+                                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(sortedArtists) { artist ->
+                                        Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToArtist(artist.ratingKey, artist.title) }.padding(8.dp)) {
+                                            Text(artist.title, color = Color.White)
+                                        }
                                     }
                                 }
+                                AlphabetRail(sortedArtists.map { it.title }, onLetter = { index -> scope.launch { listState.animateScrollToItem(index) } }, modifier = Modifier.align(Alignment.CenterEnd))
                             }
                         }
                     }
@@ -307,13 +328,17 @@ fun LibraryScreen(
                                 }
                             }
                         } else {
-                             LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(sortedAlbums) { album ->
-                                    // Simple List Item for Album
-                                    Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToAlbum(album.ratingKey, album.title) }.padding(8.dp)) {
-                                        Text(album.title, color = Color.White)
+                            val listState = rememberLazyListState()
+                            val scope = rememberCoroutineScope()
+                            Box {
+                                LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(sortedAlbums) { album ->
+                                        Row(modifier = Modifier.fillMaxWidth().clickable { onNavigateToAlbum(album.ratingKey, album.title) }.padding(8.dp)) {
+                                            Text(album.title, color = Color.White)
+                                        }
                                     }
                                 }
+                                AlphabetRail(sortedAlbums.map { it.title }, onLetter = { index -> scope.launch { listState.animateScrollToItem(index) } }, modifier = Modifier.align(Alignment.CenterEnd))
                             }
                         }
                     }

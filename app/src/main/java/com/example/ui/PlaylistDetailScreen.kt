@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -42,6 +44,7 @@ fun PlaylistDetailScreen(
     // Collect tracks reactively from Room
     val tracksState = remember(playlistId) { viewModel.repository.getPlaylistTracks(playlistId) }
     val tracks by tracksState.collectAsStateWithLifecycle(initialValue = emptyList())
+    var orderedTracks by remember(playlistId, tracks) { mutableStateOf(tracks) }
     val context = LocalContext.current
 
     val baseUrl = viewModel.repository.settings.baseUrl
@@ -259,7 +262,7 @@ fun PlaylistDetailScreen(
                     }
                 }
             } else {
-                itemsIndexed(tracks) { index, track ->
+                itemsIndexed(orderedTracks) { index, track ->
                     PlaylistTrackRow(
                         index = index + 1,
                         track = track,
@@ -267,8 +270,19 @@ fun PlaylistDetailScreen(
                             viewModel.removeTrackFromPlaylist(playlistId, track.ratingKey)
                         },
                         onClick = {
-                            val playbackTracks = tracks.map { it.toTrackItem() }
+                            val playbackTracks = orderedTracks.map { it.toTrackItem() }
                             viewModel.playbackManager.playTrack(track.toTrackItem(), playbackTracks)
+                        },
+                        modifier = Modifier.pointerInput(orderedTracks) {
+                            detectDragGesturesAfterLongPress { change, dragAmount ->
+                                change.consume()
+                                val target = (index + if (dragAmount.y > 0) 1 else -1).coerceIn(0, orderedTracks.lastIndex)
+                                if (target != index) {
+                                    val updated = orderedTracks.toMutableList().apply { add(target, removeAt(index)) }
+                                    orderedTracks = updated
+                                    viewModel.reorderPlaylist(playlistId, updated)
+                                }
+                            }
                         }
                     )
                 }
@@ -282,10 +296,11 @@ fun PlaylistTrackRow(
     index: Int,
     track: PlaylistTrackEntity,
     onDelete: () -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable { onClick() }
             .padding(vertical = 12.dp, horizontal = 16.dp),

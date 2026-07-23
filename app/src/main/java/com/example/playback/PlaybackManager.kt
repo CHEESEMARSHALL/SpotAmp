@@ -38,7 +38,9 @@ data class TrackItem(
     val thumb: String, // e.g. "/library/metadata/456/thumb/..."
     val duration: Long,
     val localPath: String? = null,
-    val genres: List<String> = emptyList()
+    val genres: List<String> = emptyList(),
+    val albumRatingKey: String? = null,
+    val artistRatingKey: String? = null
 )
 
 class PlaybackManager private constructor(private val appContext: Context) {
@@ -90,6 +92,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
         private set
     var token: String = ""
         private set
+    private var companionToken: String = ""
 
     // Last.fm Scrobbling support
     private var hasScrobbledCurrent = false
@@ -121,7 +124,19 @@ class PlaybackManager private constructor(private val appContext: Context) {
     fun setCredentials(baseUrl: String, token: String) {
         this.baseUrl = baseUrl
         this.token = token
-        httpDataSourceFactory?.setDefaultRequestProperties(mapOf("X-Plex-Token" to token))
+        updateHttpRequestHeaders()
+    }
+
+    fun setCompanionToken(token: String) {
+        companionToken = token.trim()
+        updateHttpRequestHeaders()
+    }
+
+    private fun updateHttpRequestHeaders() {
+        val headers = mutableMapOf<String, String>()
+        if (token.isNotBlank()) headers["X-Plex-Token"] = token
+        if (companionToken.isNotBlank()) headers["Authorization"] = "Bearer $companionToken"
+        httpDataSourceFactory?.setDefaultRequestProperties(headers)
     }
 
     fun setMusicDao(dao: MusicDao) {
@@ -167,8 +182,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private fun initializePlayer() {
         if (exoPlayer != null) return
 
-        val httpFactory = DefaultHttpDataSource.Factory().setDefaultRequestProperties(mapOf("X-Plex-Token" to token))
+        val httpFactory = DefaultHttpDataSource.Factory()
         httpDataSourceFactory = httpFactory
+        updateHttpRequestHeaders()
         exoPlayer = ExoPlayer.Builder(appContext)
             // Route local file:// downloads through FileDataSource and remote Plex media
             // through the authenticated HTTP factory.
@@ -353,7 +369,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private fun mediaUri(track: TrackItem, normalizedBaseUrl: String = baseUrl.trimEnd('/')): String {
         val localFile = getLocalAudioFile(track)
         if (localFile != null) return localFile.toURI().toString()
-        return "$normalizedBaseUrl${track.key}"
+        return if (track.key.startsWith("http://") || track.key.startsWith("https://")) track.key
+        else "$normalizedBaseUrl${track.key}"
     }
 
     fun playTrack(track: TrackItem, queueList: List<TrackItem>) {
@@ -497,6 +514,21 @@ class PlaybackManager private constructor(private val appContext: Context) {
         persistPlaybackState()
     }
 
+    fun moveQueueItem(from: Int, to: Int) {
+        val current = _queue.value.toMutableList()
+        if (from !in current.indices || to !in current.indices || from == to) return
+        val item = current.removeAt(from)
+        current.add(to, item)
+        _queue.value = current
+        mainHandler.post { exoPlayer?.moveMediaItem(from, to) }
+        _currentIndex.value = when (_currentIndex.value) {
+            from -> to
+            in minOf(from, to)..maxOf(from, to) -> _currentIndex.value + if (from < to) -1 else 1
+            else -> _currentIndex.value
+        }
+        persistPlaybackState()
+    }
+
     fun clearQueue() {
         mainHandler.post {
             exoPlayer?.stop()
@@ -636,8 +668,12 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     fun applyAudioEffects() {
         val sessionId = exoPlayer?.audioSessionId ?: return
-        if (sessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) return
+        if (sessionId == androidx.media3.common.C.AUDIO_SESSION_ID_UNSET) {
+            android.util.Log.w("PlaybackManager", "Audio effects deferred: audio session is unset")
+            return
+        }
         val settings = PlexSettingsManager(appContext)
+        android.util.Log.i("PlaybackManager", "Applying audio effects session=$sessionId eq=${settings.equalizerEnabled} preset=${settings.equalizerPreset} normalization=${settings.normalizationEnabled}")
 
         // Equalizer Setup
         if (settings.equalizerEnabled) {
@@ -645,12 +681,13 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 if (equalizer == null || equalizer?.id != sessionId) {
                     equalizer?.release()
                     equalizer = android.media.audiofx.Equalizer(0, sessionId).apply {
-                        enabled = true
+                        enabled = false
                     }
                 }
                 val eq = equalizer
                 if (eq != null) {
                     val preset = settings.equalizerPreset
+                    val customBands = settings.equalizerBands
                     val numPresets = eq.numberOfPresets
                     var found = false
                     for (i in 0 until numPresets) {
@@ -659,18 +696,24 @@ class PlaybackManager private constructor(private val appContext: Context) {
                             found = true
                             break
                         }
+                        eq.enabled = true
+                        android.util.Log.i("PlaybackManager", "Equalizer active bands=${eq.numberOfBands}")
                     }
-                    if (!found) {
+                    if (preset.equals("Custom", ignoreCase = true) || !found) {
                         val numBands = eq.numberOfBands
                         val range = eq.bandLevelRange
                         val maxLevel = range[1]
                         val midLevel = 0.toShort()
-                        when (preset.lowercase()) {
-                            "bass boost" -> {
+                        if (preset.equals("Custom", ignoreCase = true)) {
+                            for (b in 0 until minOf(numBands.toInt(), customBands.size)) {
+                                eq.setBandLevel(b.toShort(), customBands[b].coerceIn(range[0].toInt(), range[1].toInt()).toShort())
+                            }
+                        } else when (preset.lowercase()) {
+                            "bass boost", "bass booster" -> {
                                 if (numBands > 0) eq.setBandLevel(0, (maxLevel * 0.7).toInt().toShort())
                                 if (numBands > 1) eq.setBandLevel(1, (maxLevel * 0.5).toInt().toShort())
                             }
-                            "vocal boost" -> {
+                            "vocal boost", "vocal booster" -> {
                                 if (numBands > 2) eq.setBandLevel(2, (maxLevel * 0.6).toInt().toShort())
                                 if (numBands > 3) eq.setBandLevel(3, (maxLevel * 0.4).toInt().toShort())
                             }
@@ -698,9 +741,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     if (dynamicsProcessing == null) {
                         val builder = android.media.audiofx.DynamicsProcessing.Config.Builder(
                             android.media.audiofx.DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                            1,
-                            true, 1,
+                            2,
                             false, 0,
+                            true, 0,
                             false, 0,
                             false
                         )
@@ -717,6 +760,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
                         limiter.threshold = -2.0f
                         limiter.postGain = 2.0f
                         dp.setLimiterByChannelIndex(0, limiter)
+                        if (dp.channelCount > 1) dp.setLimiterByChannelIndex(1, limiter)
+                        android.util.Log.i("PlaybackManager", "DynamicsProcessing limiter active session=$sessionId")
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()

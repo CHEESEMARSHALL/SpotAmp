@@ -35,7 +35,7 @@ fun TrackRow(
 ) {
     val context = LocalContext.current
     val normalizedBaseUrl = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
-    val imageUrl = if (track.thumb.isNotEmpty()) "$normalizedBaseUrl${track.thumb}" else null
+    val imageUrl = if (track.thumb.isNotEmpty()) track.thumb.takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: "$normalizedBaseUrl${track.thumb}" else null
 
     Row(
         modifier = modifier
